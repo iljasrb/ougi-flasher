@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Flash · ougi-flasher</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="./" data-title="Flash" data-warn="Experimental web flasher: it talks to your bootloader directly, can leave the phone unable to boot, and can erase your data. Know how to recover it by hand before you start.">
+<div class="wrapper">
+
+<main class="home">
+  <div class="layout">
+
+    <aside>
+      <section>
+        <h2>Connection</h2>
+        <div class="card static">
+          <span class="name" id="device-name">Not connected</span>
+          <span class="meta" id="device-meta"></span>
+          <div class="bar">
+            <button class="btn" id="connect">Connect</button>
+            <button class="btn" id="to-bootloader" hidden>Reboot to bootloader</button>
+          </div>
+          <table class="kv"><tbody id="device">
+            <tr><td>State</td><td>not connected</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Flasher config</h2>
+        <div class="card static link" id="config-card" role="button" tabindex="0">
+          <span class="name" id="config-name">…</span>
+          <span class="meta" id="config-meta">…</span>
+        </div>
+      </section>
+    </aside>
+
+    <div class="content">
+
+      <section>
+        <h2 id="flash-title">Flash</h2>
+        <div class="card static">
+          <div class="card-head">
+            <div class="grow">
+              <span class="name" id="build">…</span>
+              <span class="meta" id="build-meta">reading flasher.json…</span>
+            </div>
+            <span class="chip" id="build-chip" hidden></span>
+          </div>
+
+          <div class="modes" id="modes">
+            <label class="mode"><input type="radio" name="mode" value="clean" checked><span><strong>Clean</strong><em>wipes data</em></span></label>
+            <label class="mode"><input type="radio" name="mode" value="update"><span><strong>Update</strong><em>sideload, keeps data</em></span></label>
+          </div>
+
+          <ol class="steps" id="steps">
+            <li data-step="check"><b>1</b><div><strong>Device check</strong><span class="detail">waiting</span></div></li>
+            <li data-step="download"><b>2</b><div><strong>Download additional images</strong><span class="detail">waiting</span></div></li>
+            <li data-step="otadl"><b>3</b><div><strong>Download OTA</strong><span class="detail">waiting</span></div></li>
+            <li data-step="flash"><b>4</b><div><strong>Flash additional images</strong><span class="detail">waiting</span></div></li>
+            <li data-step="reset"><b>5</b><div><strong>Factory data reset (on the phone)</strong><span class="detail">waiting</span></div></li>
+            <li data-step="rom"><b>6</b><div><strong>Sideload ROM</strong><span class="detail">waiting</span></div></li>
+            <li data-step="done"><b>7</b><div><strong>Reboot system</strong><span class="detail">waiting</span></div></li>
+          </ol>
+
+          <div class="track" id="track">
+            <span data-track="check"><i></i></span>
+            <span data-track="download"><i></i></span>
+            <span data-track="otadl"><i></i></span>
+            <span data-track="flash"><i></i></span>
+            <span data-track="reset"><i></i></span>
+            <span data-track="rom"><i></i></span>
+            <span data-track="done"><i></i></span>
+          </div>
+
+          <div class="bar options">
+            <button class="btn primary" id="flash" disabled>Update</button>
+            <button class="btn" id="grant" hidden>Allow recovery adb</button>
+            <span class="status" id="status">Plug in the phone.</span>
+          </div>
+
+          <p class="callout hint" id="hint" hidden></p>
+        </div>
+      </section>
+
+      <section>
+        <div class="bar log-head">
+          <h2>Process log</h2>
+          <button class="btn" id="log-download">Download log</button>
+        </div>
+        <div class="log" id="log"></div>
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<script src="lib/chrome.js"></script>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

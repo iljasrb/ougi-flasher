@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Console · ougi-flasher</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="console.html" data-title="Console">
+<div class="wrapper">
+
+<main class="home">
+
+  <section>
+    <h2>fastboot</h2>
+    <div class="grid folders">
+      <div class="card static span">
+        <span class="name">fastboot</span>
+        <span class="meta">getvar, flash:&lt;part&gt;, set_active:&lt;slot&gt;, reboot-&lt;target&gt;</span>
+        <div class="bar">
+          <button class="btn" id="fb-connect">Connect</button>
+          <span class="status" id="fb-status">Phone must be in bootloader mode.</span>
+        </div>
+        <pre class="term" id="fb-out"></pre>
+        <form class="term-line" id="fb-line">
+          <span class="prompt">$</span>
+          <input id="fb-in" autocomplete="off" spellcheck="false" placeholder="getvar product" disabled>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>adb</h2>
+    <div class="grid folders">
+      <div class="card static span">
+        <span class="name">adb</span>
+        <span class="meta">Every line runs as <code>adb shell &lt;line&gt;</code>; root is <code>su -c</code></span>
+        <div class="bar">
+          <button class="btn" id="adb-connect">Connect</button>
+          <span class="status" id="adb-status">Phone must be booted with USB debugging on.</span>
+        </div>
+        <pre class="term" id="adb-out"></pre>
+        <form class="term-line" id="adb-line">
+          <span class="prompt">$</span>
+          <input id="adb-in" autocomplete="off" spellcheck="false" placeholder="getprop ro.build.version.release" disabled>
+        </form>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script src="lib/chrome.js"></script>
+</div>
+<script type="module" src="console.js"></script>
+</body>
+</html>

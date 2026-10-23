@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Tools · ougi-flasher</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="tools.html" data-title="Tools" data-warn="Experimental: this writes to your phone over WebUSB. Make sure you can recover it by hand before you start.">
+<div class="wrapper">
+
+<main class="home">
+  <div class="layout">
+
+    <aside>
+      <section>
+        <h2>Connection</h2>
+        <div class="card static">
+          <span class="name" id="device-name">Not connected</span>
+          <span class="meta" id="device-meta">Booted Android, or recovery sideload</span>
+          <div class="bar">
+            <button class="btn" id="connect">Connect</button>
+          </div>
+          <table class="kv"><tbody id="device">
+            <tr><td>State</td><td>not connected</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+    </aside>
+
+    <div class="content">
+
+      <section>
+        <h2>Add-on sideload</h2>
+        <div class="card static">
+          <span class="name" id="package-name">…</span>
+          <span class="meta" id="package-meta">Add-on zip, pushed with adb sideload</span>
+
+          <ol class="steps" id="steps">
+            <li data-step="download"><b>1</b><div><strong>Choose the add-on zip</strong><span class="detail">waiting</span></div></li>
+            <li data-step="wait"><b>2</b><div><strong>Get the phone into recovery sideload</strong><span class="detail">waiting</span></div></li>
+            <li data-step="flash"><b>3</b><div><strong>Sideload the add-on</strong><span class="detail">waiting</span></div></li>
+            <li data-step="done"><b>4</b><div><strong>Reboot system</strong><span class="detail">waiting</span></div></li>
+          </ol>
+
+          <div class="track" id="track">
+            <span data-track="download"><i></i></span>
+            <span data-track="wait"><i></i></span>
+            <span data-track="flash"><i></i></span>
+            <span data-track="done"><i></i></span>
+          </div>
+
+          <div class="bar options">
+            <button class="btn primary" id="run" disabled>Sideload add-on</button>
+            <button class="btn" id="grant" hidden>Allow recovery adb</button>
+            <span class="status" id="status">Press Sideload add-on — it waits for the phone in recovery sideload.</span>
+          </div>
+
+          <p class="callout hint" id="hint" hidden></p>
+        </div>
+      </section>
+
+      <section>
+        <div class="bar log-head">
+          <h2>Process log</h2>
+          <button class="btn" id="log-download">Download log</button>
+        </div>
+        <p class="lede">Every step this page runs, timestamped. Stays in this tab — download it if you need to report something.</p>
+        <div class="log" id="log"></div>
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<script src="lib/chrome.js"></script>
+</div>
+<script type="module" src="tools.js"></script>
+</body>
+</html>

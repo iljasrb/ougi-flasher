@@ -1,0 +1,9 @@
+.DS_Store
+*.zip
+node_modules/
+bronco/
+
+.check.mjs
+flasher.log
+pkg/
+version.txt
