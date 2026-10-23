@@ -10,7 +10,7 @@ dest=${1:?usage: $0 user@host:/path/under/the/webroot}
 # the footer shows this, the same short hash meisho prints
 version=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
 printf '%s\n' "$version" > version.txt
-rsync -a --delete \
+rsync -a --delete --delete-excluded \
 	--exclude .git \
 	--exclude '*.zip' \
 	--exclude 'bronco/' \

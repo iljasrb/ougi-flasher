@@ -25,6 +25,7 @@ lib/unlock.mjs                 bootloader lock state across bootloader/kernel/pr
 lib/ui.mjs, lib/dialog.mjs     tables, status boxes, dialogs
 lib/chrome.js, lib/term.js     header/nav/footer, terminal pane
 zip.mjs                        reads zip entries
+manifest.json                  web app manifest (installable, no icon)
 style.css                      page styles
 vendor/                        fastboot.js and ya-webadb, both MIT
 serve.py                       dev server with a /pkg/ proxy
