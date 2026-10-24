@@ -4,9 +4,10 @@ WebUSB flasher for custom ROM installs. The page downloads the package, checks i
 it to the phone from the browser. Nothing is installed on the user's machine and no server is
 involved in the transfer. Chromium only.
 
-One deployment flashes one device. Everything device-specific is in `flasher.json`: codename, image
-list, URLs, add-ons, page copy. No code knows a phone or a ROM by name. The shipped config targets
-Project Infinity X on the Motorola ThinkPhone (`bronco`).
+`flasher.json` is the manifest: it points at one JSON file per configuration, so a deployment can
+serve several devices or builds without one growing file. Everything device-specific lives in a
+configuration: codename, image list, URLs, add-ons. No code knows a phone or a ROM by
+name. The shipped configuration targets Project Infinity X on the Motorola ThinkPhone (`bronco`).
 
 ```
 index.html      Flash    device check, download, flash (clean or update)
@@ -14,18 +15,18 @@ console.html    Console  fastboot and adb terminals
 tools.html      Tools    re-sideload an add-on on its own
 
 app.js, console.js, tools.js   page logic
-flasher.json                   the config
-lib/config.mjs                 load and validate flasher.json
+flasher.json                   the configuration manifest
+configs/                       one JSON per device/build
+lib/config.mjs                 load and validate the manifest and configs
 lib/usb.mjs                    device picker, mode detection, getvar parsing
 lib/flash.mjs                  download, sha256, image read/flash, push to /sdcard
 lib/adb.mjs                    connect, props, reboot, sideload-host
 lib/recovery.mjs               wait for sideload mode, retry after a reconnect
+lib/session.mjs                sideload wait, grant button, reconnect
 lib/addons.mjs                 pick and hash an add-on zip
-lib/unlock.mjs                 bootloader lock state across bootloader/kernel/props
 lib/ui.mjs, lib/dialog.mjs     tables, status boxes, dialogs
-lib/chrome.js, lib/term.js     header/nav/footer, terminal pane
+lib/term.js                    terminal pane
 zip.mjs                        reads zip entries
-manifest.json                  web app manifest (installable, no icon)
 style.css                      page styles
 vendor/                        fastboot.js and ya-webadb, both MIT
 serve.py                       dev server with a /pkg/ proxy
@@ -73,40 +74,48 @@ Add-on zips are not downloaded by the page. They are not mirrored and the browse
 GitHub release (no CORS), so the user picks the zip. It is hashed and compared to `sha256`; a
 mismatch is logged as *unverified* and still allowed.
 
-## flasher.json
+## Configuration files
+
+`flasher.json` only lists where the configurations are. An entry is a path, a URL, or an inline
+object:
 
 ```json
 {
+  "configs": [
+    "configs/bronco-infinity-x.json"
+  ]
+}
+```
+
+`configs/bronco-infinity-x.json` holds the device/build data (the file itself is the reference):
+
+```json
+{
+  "id": "bronco-infinity-x",
   "codename": "bronco",
   "name": "Motorola ThinkPhone",
-  "models": ["XT2309-2", "XT2309-3"],
   "build": "Project Infinity X 4.1 · 22.10.2026",
   "channel": "latest",
-  "text": {
-    "title": "Flash",
-    "brand": "ougi-flasher",
-    "warn": "Experimental web flasher: …",
-    "risks": ["I understand that this may erase the data on my phone.", "…"]
-  },
   "ota":    { "url": "https://…zip", "size": 1857262831, "sha256": "…" },
   "images": { "url": "https://…zip", "size": 50158695, "sha256": "…",
               "partitions": ["boot", "dtbo", "vbmeta", "vbmeta_system", "vendor_boot", "recovery"],
               "slotless": ["recovery"] },
   "addons": [
-    { "title": "MindTheGapps", "label": "MindTheGapps 17.0.0 arm64 · 22.10.2026",
-      "name": "MindTheGapps-…zip", "source": "https://github.com/…/releases/latest",
-      "size": 544284463, "sha256": "…",
+    { "title": "MindTheGapps", "name": "MindTheGapps-…zip",
+      "source": "https://github.com/…/releases/latest", "size": 544284463, "sha256": "…",
       "detect": ["com.google.android.gms", "com.android.vending"] }
   ]
 }
 ```
 
+- `configs` is a list of paths, URLs, or inline objects. `id` is unique and is what the page
+  remembers; it defaults to `codename`. Optional `source` is linked from the details window.
 - `codename` must match what the phone reports (`getvar product`, `ro.product.device`). A mismatch
-  disables the action button.
+  disables the action button. When the connected phone matches exactly one configuration, that
+  configuration is selected automatically.
 - `ota` and `images` need `url`, `size` and `sha256`. `images` also needs `partitions`.
 - `addons` is a list; the flash card shows one toggle per entry.
-- `text` is the page copy: title and nav label, brand line, caution banner, risk ticks. `text.warn`
-  empty removes the banner.
+- Page copy — title, brand, caution banner, risk ticks — lives in the HTML pages, not the config.
 - URLs must be absolute, and served from the same origin as the packages.
 
 ## Run locally
@@ -152,9 +161,10 @@ flasher.example.org {
 
 1. Publish the OTA zip and an `additional_images-<tag>.zip` with the boot-chain images that device's
    flash guide uses.
-2. Edit `flasher.json`. Nothing else changes.
-3. `node check-images.mjs path/to/additional_images-<tag>.zip` checks the config and that the zip
-   holds exactly the listed partitions.
+2. Add `configs/<id>.json` and list it in `flasher.json`. Nothing else changes. The Configuration
+   card on Flash and Tools opens a searchable configuration window.
+3. `node check-images.mjs path/to/additional_images-<tag>.zip` checks every configuration and that
+   the zip holds exactly the listed partitions.
 4. `./check.sh`, then deploy.
 
 ## Limits
@@ -164,8 +174,8 @@ flasher.example.org {
 - Mode comes from the USB interface: `ff/42/03` fastboot, `ff/42/01` adb.
 - Recovery sideload only serves the sideload socket, so the codename cannot be checked there. The
   boot chain is already written by that point.
-- The Flash page asks for a risk acknowledgement once per browser (`localStorage`) before it enables
-  anything, and locks the UI while a flash runs.
+- The Flash page asks for a risk acknowledgement once per configuration (`localStorage`) before it
+  enables anything, and locks the UI while a flash runs.
 
 ## Checks
 
@@ -173,9 +183,9 @@ flasher.example.org {
 ./check.sh
 ```
 
-Runs `check-unlock.mjs` (lock-state parsing, getvar, add-on detection), `check-sideload.mjs` (the
+Runs `check-unlock.mjs` (lock words, getvar, add-on detection), `check-sideload.mjs` (the
 sideload reader against a scripted device, including reconnects), `check-paths.mjs` (URL resolution),
-`check-images.mjs` (config through the real loader, plus the image set), then `node --check` and
+`check-images.mjs` (every configuration through the real loader, plus the image set), then `node --check` and
 `eslint no-undef` over every file.
 
 ## Links

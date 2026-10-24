@@ -6,10 +6,23 @@
 <meta name="color-scheme" content="light dark">
 <title>Flash · ougi-flasher</title>
 <link rel="stylesheet" href="style.css">
-<link rel="manifest" href="manifest.json">
 </head>
-<body data-page="./" data-title="Flash" data-warn="Experimental web flasher: it talks to your bootloader directly, can leave the phone unable to boot, and can erase your data. Know how to recover it by hand before you start.">
+<body>
 <div class="wrapper">
+
+<header>
+  <div class="bar">
+    <div class="grow">
+      <h1><a href="./">ougi-flasher</a></h1>
+    </div>
+    <nav>
+      <a href="./" class="on" aria-current="page">Flash</a>
+      <a href="console.html">Console</a>
+      <a href="tools.html">Tools</a>
+    </nav>
+  </div>
+</header>
+<p class="callout warn"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12,2L1,21H23M12,6L19.5,19H4.5M11,10V14H13V10M11,16V18H13V16"/></svg><span>Experimental web flasher: it talks to your bootloader directly, can leave the phone unable to boot, and can erase your data. Know how to recover it by hand before you start.</span></p>
 
 <main class="home">
   <div class="layout">
@@ -17,7 +30,7 @@
     <aside>
       <section>
         <h2>Connection</h2>
-        <div class="card static">
+        <div class="card static connection-card">
           <span class="name" id="device-name">Not connected</span>
           <span class="meta" id="device-meta"></span>
           <div class="bar">
@@ -31,10 +44,12 @@
       </section>
 
       <section>
-        <h2>Flasher config</h2>
-        <div class="card static link" id="config-card" role="button" tabindex="0">
-          <span class="name" id="config-name">…</span>
-          <span class="meta" id="config-meta">…</span>
+        <h2>Configuration</h2>
+        <div class="card static config-card">
+          <button class="config-open" id="config-open" type="button" aria-label="Choose configuration">
+            <span class="name" id="config-name">…</span>
+            <span class="meta" id="config-meta">…</span>
+          </button>
         </div>
       </section>
     </aside>
@@ -57,25 +72,8 @@
             <label class="mode"><input type="radio" name="mode" value="update"><span><strong>Update</strong><em>sideload, keeps data</em></span></label>
           </div>
 
-          <ol class="steps" id="steps">
-            <li data-step="check"><b>1</b><div><strong>Device check</strong><span class="detail">waiting</span></div></li>
-            <li data-step="download"><b>2</b><div><strong>Download additional images</strong><span class="detail">waiting</span></div></li>
-            <li data-step="otadl"><b>3</b><div><strong>Download OTA</strong><span class="detail">waiting</span></div></li>
-            <li data-step="flash"><b>4</b><div><strong>Flash additional images</strong><span class="detail">waiting</span></div></li>
-            <li data-step="reset"><b>5</b><div><strong>Factory data reset (on the phone)</strong><span class="detail">waiting</span></div></li>
-            <li data-step="rom"><b>6</b><div><strong>Sideload ROM</strong><span class="detail">waiting</span></div></li>
-            <li data-step="done"><b>7</b><div><strong>Reboot system</strong><span class="detail">waiting</span></div></li>
-          </ol>
-
-          <div class="track" id="track">
-            <span data-track="check"><i></i></span>
-            <span data-track="download"><i></i></span>
-            <span data-track="otadl"><i></i></span>
-            <span data-track="flash"><i></i></span>
-            <span data-track="reset"><i></i></span>
-            <span data-track="rom"><i></i></span>
-            <span data-track="done"><i></i></span>
-          </div>
+          <ol class="steps" id="steps"></ol>
+          <div class="track" id="track"></div>
 
           <div class="bar options">
             <button class="btn primary" id="flash" disabled>Update</button>
@@ -99,8 +97,10 @@
   </div>
 </main>
 
-<script src="lib/chrome.js"></script>
+<footer>fastboot over WebUSB by <a href="https://github.com/lineageos-infra/fastboot.js">lineageos-infra/fastboot.js</a>, adb by <a href="https://github.com/yume-chan/ya-webadb">ya-webadb</a> (MIT) · <a href="https://github.com/iljasrb/ougi-flasher">source on GitHub</a> (MIT)<br><span id="version">dev</span></footer>
+
 </div>
+<script>fetch('version.txt').then((r) => (r.ok ? r.text() : 'dev')).then((v) => { document.getElementById('version').textContent = v.trim() || 'dev' }).catch(() => {})</script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

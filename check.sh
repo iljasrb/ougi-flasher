@@ -4,7 +4,7 @@
 #   ./check.sh
 set -eu
 cd "$(dirname "$0")"
-files=(app.js console.js tools.js lib/*.mjs lib/chrome.js zip.mjs)
+files=(app.js console.js tools.js lib/*.mjs lib/term.js zip.mjs)
 globals=(document window navigator location crypto Blob URL URLSearchParams Response ReadableStream TransformStream DecompressionStream
 	TextDecoder TextEncoder fetch setTimeout clearTimeout setInterval clearInterval URL console indexedDB localStorage)
 

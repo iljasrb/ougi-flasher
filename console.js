@@ -24,6 +24,8 @@ const HELP = {
 // ---- fastboot -------------------------------------------------------------------------
 
 let fastboot = null
+let autoPending = false
+let autoFailed = false
 const fbTerm = new Terminal({
 	output: $('fb-out'),
 	input: $('fb-in'),
@@ -44,6 +46,7 @@ setDebugLogger((...data) => {
 const fbStatus = statusBox('fb-status')
 
 async function connectFastboot(usb) {
+	autoFailed = false
 	$('fb-connect').disabled = true
 	try {
 		if (!usb) {
@@ -100,6 +103,7 @@ const adbTerm = new Terminal({
 const adbStatus = statusBox('adb-status')
 
 async function connectAdbDevice(device) {
+	autoFailed = false
 	$('adb-connect').disabled = true
 	try {
 		adbStatus('Authorising — confirm the USB debugging prompt on the phone.')
@@ -145,6 +149,7 @@ function watchConnection() {
 	let retry = null
 	watchUsb((kind) => {
 		if (kind === 'disconnect') {
+			autoFailed = false
 			if (fastboot) {
 				resetFastboot()
 				fbStatus('Device disconnected.')
@@ -156,8 +161,8 @@ function watchConnection() {
 			return
 		}
 		clearTimeout(retry)
-		retry = setTimeout(() => {
-			if (!fastboot && !adb) autoConnect().catch((err) => fbStatus(err.message, 'err'))
+		retry = setTimeout(async () => {
+			if (!fastboot && !adb) await autoConnectOnce()
 		}, 700)
 	})
 }
@@ -171,8 +176,24 @@ async function autoConnect() {
 	for (const device of await grantedAdbDevices()) return await connectAdbDevice(device)
 }
 
+// One automatic attempt per device appearance; retrying a phone that is waiting for the "Allow USB
+// debugging" tap just asks it again.
+async function autoConnectOnce() {
+	if (autoPending || autoFailed || fastboot || adb) return
+	autoPending = true
+	try {
+		await autoConnect()
+		autoFailed = false
+	} catch (err) {
+		autoFailed = true
+		fbStatus(err.message, 'err')
+	} finally {
+		autoPending = false
+	}
+}
+
 $('fb-line').addEventListener('submit', (event) => event.preventDefault())
 $('adb-line').addEventListener('submit', (event) => event.preventDefault())
 
-autoConnect().catch((err) => fbStatus(err.message, 'err'))
+autoConnectOnce()
 watchConnection()

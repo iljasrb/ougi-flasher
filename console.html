@@ -6,55 +6,65 @@
 <meta name="color-scheme" content="light dark">
 <title>Console · ougi-flasher</title>
 <link rel="stylesheet" href="style.css">
-<link rel="manifest" href="manifest.json">
 </head>
-<body data-page="console.html" data-title="Console">
+<body>
 <div class="wrapper">
+
+<header>
+  <div class="bar">
+    <div class="grow">
+      <h1><a href="./">ougi-flasher</a></h1>
+    </div>
+    <nav>
+      <a href="./">Flash</a>
+      <a href="console.html" class="on" aria-current="page">Console</a>
+      <a href="tools.html">Tools</a>
+    </nav>
+  </div>
+</header>
 
 <main class="home">
 
   <section>
     <h2>fastboot</h2>
-    <div class="grid folders">
-      <div class="card static span">
-        <span class="name">fastboot</span>
-        <span class="meta">getvar, flash:&lt;part&gt;, set_active:&lt;slot&gt;, reboot-&lt;target&gt;</span>
-        <div class="bar">
-          <button class="btn" id="fb-connect">Connect</button>
-          <span class="status" id="fb-status">Phone must be in bootloader mode.</span>
-        </div>
-        <pre class="term" id="fb-out"></pre>
-        <form class="term-line" id="fb-line">
-          <span class="prompt">$</span>
-          <input id="fb-in" autocomplete="off" spellcheck="false" placeholder="getvar product" disabled>
-        </form>
+    <div class="card static">
+      <span class="name">fastboot</span>
+      <span class="meta">getvar, flash:&lt;part&gt;, set_active:&lt;slot&gt;, reboot-&lt;target&gt;</span>
+      <div class="bar">
+        <button class="btn" id="fb-connect">Connect</button>
+        <span class="status" id="fb-status">Phone must be in bootloader mode.</span>
       </div>
+      <pre class="term" id="fb-out"></pre>
+      <form class="term-line" id="fb-line">
+        <span class="prompt">$</span>
+        <input id="fb-in" autocomplete="off" spellcheck="false" placeholder="getvar product" disabled>
+      </form>
     </div>
   </section>
 
   <section>
     <h2>adb</h2>
-    <div class="grid folders">
-      <div class="card static span">
-        <span class="name">adb</span>
-        <span class="meta">Every line runs as <code>adb shell &lt;line&gt;</code>; root is <code>su -c</code></span>
-        <div class="bar">
-          <button class="btn" id="adb-connect">Connect</button>
-          <span class="status" id="adb-status">Phone must be booted with USB debugging on.</span>
-        </div>
-        <pre class="term" id="adb-out"></pre>
-        <form class="term-line" id="adb-line">
-          <span class="prompt">$</span>
-          <input id="adb-in" autocomplete="off" spellcheck="false" placeholder="getprop ro.build.version.release" disabled>
-        </form>
+    <div class="card static">
+      <span class="name">adb</span>
+      <span class="meta">Every line runs as <code>adb shell &lt;line&gt;</code>; root is <code>su -c</code></span>
+      <div class="bar">
+        <button class="btn" id="adb-connect">Connect</button>
+        <span class="status" id="adb-status">Phone must be booted with USB debugging on.</span>
       </div>
+      <pre class="term" id="adb-out"></pre>
+      <form class="term-line" id="adb-line">
+        <span class="prompt">$</span>
+        <input id="adb-in" autocomplete="off" spellcheck="false" placeholder="getprop ro.build.version.release" disabled>
+      </form>
     </div>
   </section>
 
 </main>
 
-<script src="lib/chrome.js"></script>
+<footer>fastboot over WebUSB by <a href="https://github.com/lineageos-infra/fastboot.js">lineageos-infra/fastboot.js</a>, adb by <a href="https://github.com/yume-chan/ya-webadb">ya-webadb</a> (MIT) · <a href="https://github.com/iljasrb/ougi-flasher">source on GitHub</a> (MIT)<br><span id="version">dev</span></footer>
+
 </div>
+<script>fetch('version.txt').then((r) => (r.ok ? r.text() : 'dev')).then((v) => { document.getElementById('version').textContent = v.trim() || 'dev' }).catch(() => {})</script>
 <script type="module" src="console.js"></script>
 </body>
 </html>

@@ -1,21 +1,24 @@
 // Flash page: connect (fastboot or adb) -> device check -> ROM flash / add-on sideload.
-// Everything device-specific (codename, image list, URLs, add-ons) comes from flasher.json.
+// Everything device-specific (codename, image list, URLs, add-ons) comes from one of the
+// configurations in flasher.json.
 import { setDebugLogger } from './vendor/fastboot.min.mjs'
-import { adbDeviceFor, adbInfo, adbManager, connectAdb, detectPackages, grantedAdbDevices, rebootAdb } from './lib/adb.mjs'
+import { adbDeviceFor, adbInfo, connectAdb, detectPackages, grantedAdbDevices, rebootAdb } from './lib/adb.mjs'
 import { fetchPackage, flashImages, pushBlob, readImages } from './lib/flash.mjs'
-import { choose, confirmRisks } from './lib/dialog.mjs'
-import { loadConfig } from './lib/config.mjs'
+import { choose, chooseConfig, confirmRisks } from './lib/dialog.mjs'
+import { loadConfigs } from './lib/config.mjs'
 import { pickAddon, shortName } from './lib/addons.mjs'
 import { lockUi } from './lib/guard.mjs'
 import { every } from './lib/log.mjs'
-import { sideloadWithWait, waitForSideload as waitRecoverySideload } from './lib/recovery.mjs'
-import { progress, startRun, step } from './lib/steps.mjs'
-import { $, applyText, cardTitle, DEFAULT_RISKS, hintBox, pageLog, renderKv, size, statusBox } from './lib/ui.mjs'
+import { recoverySession } from './lib/session.mjs'
+import { sideloadWithWait } from './lib/recovery.mjs'
+import { failStep, progress, startRun, step } from './lib/steps.mjs'
+import { $, cardTitle, DEFAULT_RISKS, hintBox, pageLog, paintConfigCard, renderKv, size, statusBox } from './lib/ui.mjs'
 import { attachFastboot, grantedDevices, pickDevice, readFastbootInfo, watchUsb } from './lib/usb.mjs'
 
-const ACK_KEY = 'ougi-flasher:risk-ack-v1'
-const state = { mode: null, adbState: null, dev: null, adb: null, device: null, wrong: false, busy: false, ack: false }
-let pendingAdb = null // set by the grant button when recovery shows up as a new USB device
+const ACK_KEY = 'ougi-flasher:risk-ack-v2'
+const CONFIG_KEY = 'ougi-flasher:config'
+const ackKey = (id) => `${ACK_KEY}:${id}`
+const state = { mode: null, adbState: null, dev: null, adb: null, configs: [], config: null, codename: null, wrong: false, busy: false, ack: false }
 
 // ---- ui -------------------------------------------------------------------------------
 
@@ -27,10 +30,8 @@ const hint = hintBox('hint')
 const setCard = cardTitle('device-name', 'device-meta')
 const renderDevice = (rows) => renderKv('device', rows)
 
-// This device is Virtual A/B: the OTA is a snapshot update whose COW images live in /data and whose
-// state lives in /metadata/ota. A leftover snapshot from an earlier aborted run makes the next boot
-// fail with "Can't load Android system. Your data may be corrupt", so cancel it before touching
-// anything (the LineageOS backend does the same, see flashFactoryZip).
+// A leftover Virtual A/B snapshot makes the next boot fail ("Can't load Android system"), so cancel
+// it before touching anything.
 async function cancelPendingSnapshot(dev) {
 	let status = null
 	try {
@@ -98,12 +99,14 @@ function previewPlan() {
 	startRun(plans[selectedMode()](chosenAddons()))
 }
 
-// One checkbox per configured add-on, rendered from flasher.json so a second add-on needs no HTML.
+// One checkbox per configured add-on, rendered from the selected configuration so a second add-on
+// needs no HTML.
 function renderAddonToggles(addons) {
 	const modes = $('modes')
+	for (const old of modes.querySelectorAll('.addon-toggle')) old.remove()
 	for (const [index, addon] of addons.entries()) {
 		const wrap = document.createElement('label')
-		wrap.className = 'mode span'
+		wrap.className = 'mode span addon-toggle'
 		const box = document.createElement('input')
 		box.type = 'checkbox'
 		box.id = `with-addon-${index}`
@@ -140,7 +143,9 @@ function refreshUi() {
 		box.closest('.mode').hidden = update
 		box.disabled = offline
 	}
-	for (const radio of document.querySelectorAll('input[name="mode"]')) radio.disabled = offline
+	for (const radio of document.querySelectorAll('input[name="mode"]')) {
+		radio.disabled = offline || (radio.value === 'update' ? !d?.ota : !d?.images)
+	}
 	$('connect').textContent = state.mode ? 'Disconnect' : 'Connect'
 }
 
@@ -155,6 +160,7 @@ function reset() {
 	state.adbState = null
 	state.dev = null
 	state.adb = null
+	state.codename = null
 	state.wrong = false
 	renderDevice([['State', 'not connected']])
 	setCard('Not connected', '')
@@ -177,15 +183,25 @@ function modeHint() {
 	else say('Clean flashing needs the bootloader — press Reboot to bootloader.', 'err')
 }
 
-// Never write one device's images to another: flasher.json names the codename the phone must report.
+// Never write one device's images to another: the selected configuration names the codename the
+// phone must report. If the phone matches exactly one configuration, select it automatically.
 // Recovery/sideload cannot report it (adbd serves the sideload socket only), so it is not enforced
 // there — the boot chain was written before recovery is reached.
-function checkCodename(codename) {
+async function checkCodename(codename) {
+	state.codename = codename || null
+	if (codename && codename !== state.config.codename) {
+		const matches = state.configs.filter((config) => config.codename === codename)
+		if (matches.length === 1) {
+			log(`config: ${codename} matched ${matches[0].id} — switching`)
+			await selectConfig(matches[0].id)
+		}
+	}
 	const want = state.config.codename
 	state.wrong = Boolean(codename) && codename !== want
 	if (!state.wrong) return false
-	log(`device: connected ${codename}, this deployment is for ${want}`)
-	say(`This page flashes ${want}, but the phone says ${codename} — connect the right phone.`, 'err')
+	log(`device: connected ${codename}, this page is set to ${want}`)
+	const matching = state.configs.some((config) => config.codename === codename)
+	say(`This page flashes ${want}, but the phone says ${codename} — ${matching ? `pick a ${codename} configuration` : 'connect the right phone'}.`, 'err')
 	refreshUi()
 	return true
 }
@@ -194,23 +210,22 @@ async function useFastboot(usb) {
 	if (state.mode) return // another path already attached
 	state.dev = await attachFastboot(usb)
 	state.mode = 'fastboot'
-	const { rows, info, unlock } = await readFastbootInfo(state.dev)
+	const { rows, info } = await readFastbootInfo(state.dev)
 	log(`fastboot: product=${info.product} slot=${info.slot} unlocked=${info.unlocked}`)
 	renderDevice([['Mode', 'fastboot'], ...rows])
 	setCard(info.product ?? state.config.name, `bootloader · slot ${info.slot ?? '?'} · ${info.unlocked}`)
 	step('check', 'done', `${info.product} · slot ${info.slot} · ${info.unlocked}`)
 	say('Connected.', 'ok')
 	refreshUi()
-	if (checkCodename(info.product)) return
+	if (await checkCodename(info.product)) return
 	modeHint()
-	log(`unlock: ${info.unlocked} — ${unlock.detail}`)
-	unlockHint(unlock)
+	unlockHint(info.unlocked)
 }
 
-function unlockHint(unlock) {
-	if (unlock.value === 'locked') {
+function unlockHint(unlocked) {
+	if (unlocked === 'locked') {
 		hint('The bootloader is locked — flashing will be refused. Unlock it first (the vendor’s unlock flow), then reconnect.')
-	} else if (unlock.value === 'unclear') {
+	} else if (unlocked === '—') {
 		hint('The bootloader lock state could not be read — if flashing is refused, unlock the bootloader and retry.')
 	} else {
 		hint('')
@@ -233,13 +248,12 @@ async function useAdb(device) {
 		return
 	}
 	log(`adb: state=${adbState}`)
-	const { rows, info, unlock } = await adbInfo(adb)
+	const { rows, info } = await adbInfo(adb)
 	renderDevice([['Mode', `adb (${adbState})`], ...rows])
 	setCard(info.device ?? state.config.name, `${info.build ?? '—'} · slot ${info.slot ?? '?'} · ${info.unlocked}`)
-	log(`unlock: ${info.unlocked} — ${unlock.detail}`)
 	refreshUi()
-	if (checkCodename(info.device)) return
-	unlockHint(unlock)
+	if (await checkCodename(info.device)) return
+	unlockHint(info.unlocked)
 	say(adbState === 'device' ? 'Connected.' : `Connected (${adbState}).`, 'ok')
 	modeHint()
 }
@@ -248,6 +262,7 @@ async function connect() {
 	if (state.busy) return
 	if (state.mode) return reset()
 	clearTimeout(retryTimer)
+	autoFailed = false
 	busy(true)
 	try {
 		log('connect: opening the usb picker')
@@ -266,6 +281,8 @@ async function connect() {
 
 // A device this origin already authorised: no picker. fastboot first, then adb.
 let retryTimer = null
+let autoPending = false
+let autoFailed = false
 
 async function autoConnect() {
 	if (state.mode) return
@@ -273,6 +290,25 @@ async function autoConnect() {
 	if (fastbootDevice) return await useFastboot(fastbootDevice.usb)
 	const adbDevices = await grantedAdbDevices()
 	if (adbDevices.length) await useAdb(adbDevices[0])
+}
+
+// One automatic attempt per device appearance. A failure is usually the phone waiting for the
+// "Allow USB debugging" tap; retrying that in a loop only asks again, so wait for a replug or a
+// manual Connect instead.
+async function autoConnectOnce() {
+	if (autoPending || autoFailed || state.mode) return false
+	autoPending = true
+	try {
+		await autoConnect()
+		autoFailed = false
+		return Boolean(state.mode)
+	} catch (err) {
+		autoFailed = true
+		log(`auto-connect: ${err.message}`)
+		return false
+	} finally {
+		autoPending = false
+	}
 }
 
 // ---- bootloader -----------------------------------------------------------------------
@@ -322,32 +358,10 @@ async function rebootToRecovery(stepId, { dev = state.dev, wait = 600 } = {}) {
 	state.adbState = null
 	refreshUi()
 	hint('On the phone: Recovery mode → Apply update → Apply from ADB — recovery has to be in sideload mode.')
-	adopt(
-		await waitForSideload(wait, (i) => {
-			if (i % 15 === 0) hint('Waiting for recovery sideload mode — Apply update → Apply from ADB on the phone.')
-		}),
-	)
-	return state.adb
-}
-
-async function waitForSideload(seconds = 300, onWait = () => {}) {
-	const connected = await waitRecoverySideload(seconds, {
-		onTick: onWait,
-		onLog: (message) => log(message),
-		extra: () => {
-			const device = pendingAdb
-			pendingAdb = null
-			return device
-		},
-		onGrant: async () => {
-			// fallback only: an authorised phone shows up on its own, so this stays a quiet button
-			// that appears after a while instead of replacing the on-phone hint
-			if ((await grantedAdbDevices()).length) return
-			$('grant').hidden = false
-		},
+	await session.wait(wait, (i) => {
+		if (i % 15 === 0) hint('Waiting for recovery sideload mode — Apply update → Apply from ADB on the phone.')
 	})
-	$('grant').hidden = true
-	return connected
+	return state.adb
 }
 
 // A polled adb connection (recovery sideload) becomes the page's live connection.
@@ -359,13 +373,15 @@ function adopt(connected) {
 	return connected.adb
 }
 
+const session = recoverySession({ log, hint, adopt })
+
 // Drops the dead handle and waits for recovery to come back, for sideloadWithWait().
 async function reconnectSideload(onWait) {
 	state.adb = null
 	state.adbState = null
 	state.mode = null
 	refreshUi()
-	return adopt(await waitForSideload(300, onWait))
+	return session.reconnect(onWait)
 }
 
 // ---- update: find the add-ons that are installed, then pick the path --------------------
@@ -514,9 +530,7 @@ async function pushForLocalUpdate() {
 // Marks the running step (and the status line) as failed. `on` is the only state a step can be in
 // while the code that threw was running, so there is no need to track it by hand.
 function failRun(err, label) {
-	const failed = document.querySelector('#steps li[data-state="on"]')
-	if (failed) step(failed.dataset.step, 'err', err.message)
-	const message = err.bootloaderMessage ?? err.message
+	const message = failStep(err)
 	say(message, 'err')
 	log(`${label}: ${message}`)
 }
@@ -577,11 +591,9 @@ async function recoveryUpdate({ repush = [] } = {}) {
 			state.mode = null
 			state.adbState = null
 			refreshUi()
-			adopt(
-				await waitForSideload(120, (i) => {
-					if (i % 10 === 0) say('Waiting for recovery sideload mode…')
-				}),
-			)
+			await session.wait(120, (i) => {
+				if (i % 10 === 0) say('Waiting for recovery sideload mode…')
+			})
 		}
 
 		step('flash', 'on', 'sideloading…')
@@ -664,11 +676,9 @@ async function cleanFlash() {
 		state.mode = null
 		refreshUi()
 		hint('Recovery: Factory Reset → Format data / factory reset, back to the main menu, then Apply update → Apply from ADB.')
-		adopt(
-			await waitForSideload(900, (i) => {
-				if (i % 15 === 0) hint('Waiting — Recovery: Factory Reset → Format data / factory reset → main menu → Apply update → Apply from ADB.')
-			}),
-		)
+		await session.wait(900, (i) => {
+			if (i % 15 === 0) hint('Waiting — Recovery: Factory Reset → Format data / factory reset → main menu → Apply update → Apply from ADB.')
+		})
 		step('reset', 'done', 'factory reset done, recovery is in sideload')
 
 		// 3. the ROM itself: recovery sideload of the OTA payload
@@ -708,10 +718,8 @@ async function flash() {
 
 // ---- add-ons --------------------------------------------------------------------------
 
-// Recovery's post-install question: "To install additional packages, you need to reboot recovery
-// first — do you want to reboot to recovery now?" (bootable/recovery/install/install.cpp:638).
-// Answering Yes brings the sideload host back; the add-ons then go on in sequence, before the first
-// boot of the new build, which is the order LineageOS documents.
+// Answering Yes to recovery's "install additional packages" prompt brings the sideload host back;
+// the add-ons then go on in sequence, before the first boot of the new build.
 async function sideloadAddons(entries) {
 	if (!entries.length) {
 		step('done', 'done', 'on the phone: No, then Reboot system now')
@@ -750,11 +758,9 @@ async function sideloadAddons(entries) {
 		state.mode = null
 		refreshUi()
 		step(`addon${index}`, 'on', 'waiting for recovery…')
-		adopt(
-			await waitForSideload(600, (i) => {
-				if (i % 15 === 0) hint(onPhone)
-			}),
-		)
+		await session.wait(600, (i) => {
+			if (i % 15 === 0) hint(onPhone)
+		})
 		if (!index) step('reboot', 'done', 'recovery is back')
 		hint(`Recovery may say “Signature verification failed” during this install — tap Yes. Add-ons are not signed with the ROM’s key.`)
 		step(`addon${index}`, 'on', 'sideloading…')
@@ -784,6 +790,7 @@ async function sideloadAddons(entries) {
 function watchConnection() {
 	watchUsb(async (kind) => {
 		if (kind === 'disconnect') {
+			autoFailed = false
 			if (!state.mode) return
 			const was = state.mode
 			log(`usb: ${was} disconnected`)
@@ -804,83 +811,85 @@ function watchConnection() {
 		clearTimeout(retryTimer)
 		retryTimer = setTimeout(async () => {
 			if (state.busy || state.mode) return
-			try {
-				await autoConnect()
-				if (!state.mode) say('A device appeared, but this page has no permission for it yet — press Connect.')
-			} catch (err) {
-				// a Connect press or another attempt won the device; not worth alarming over
-				if (!state.mode) log(`auto-connect: ${err.message}`)
-			}
+			const connected = await autoConnectOnce()
+			if (!connected && !state.mode && !autoFailed) say('A device appeared, but this page has no permission for it yet — press Connect.')
 		}, 700)
 	})
 }
 
-// ---- device config card ---------------------------------------------------------------
+// ---- configurations -------------------------------------------------------------------
 
-// Everything a run is decided by, in one place: the card shows which device this deployment is for,
-// clicking it shows every parameter of flasher.json as a table.
-const fileOf = (entry) => entry.url.split('/').pop()
+// Everything a run is decided by, in one place: the card shows the selected configuration, clicking
+// it opens a searchable list and every parameter of the chosen configuration.
+const configById = (id) => state.configs.find((config) => config.id === id) ?? null
 
-function configRows(d) {
-	const rows = [
-		['Codename', d.codename],
-		['Name', d.name],
-		['Models', d.models?.join(', ') ?? '—'],
-		['Build', d.build],
-		['Channel', d.channel ?? '—'],
-		['Brand', d.text?.brand ?? '—'],
-		['Page title', d.text?.title ?? '—'],
-		['Caution banner', d.text?.warn ?? '—'],
-		['Risks', d.text?.risks?.map((risk, i) => `${i + 1}. ${risk}`).join('\n') ?? '—'],
-		['OTA file', d.ota ? fileOf(d.ota) : 'not published'],
-		['OTA size', d.ota ? size(d.ota.size) : '—'],
-		['OTA sha256', d.ota?.sha256 ?? '—'],
-		['Images file', d.images ? fileOf(d.images) : 'not published'],
-		['Images size', d.images ? size(d.images.size) : '—'],
-		['Partitions', d.images?.partitions.join('\n') ?? '—'],
-		['Slotless', d.images?.slotless.join(', ') || '—'],
-		['Images sha256', d.images?.sha256 ?? '—'],
-	]
-	for (const addon of d.addons) {
-		rows.push(
-			['Add-on', addon.title ?? addon.label ?? addon.name],
-			['Add-on file', addon.name],
-			['Add-on source', addon.source],
-			['Add-on size', addon.size ? size(addon.size) : '—'],
-			['Add-on sha256', addon.sha256 ?? 'not published'],
-			['Add-on detect', addon.detect?.join('\n') ?? '—'],
-		)
-	}
-	return rows
+// The card opens a searchable list; each result has an info button with that configuration's table.
+function wireConfigCard() {
+	$('config-open').addEventListener('click', async () => {
+		const id = await chooseConfig({ configs: state.configs, current: state.config.id })
+		if (!id) return
+		await selectConfig(id)
+		await checkCodename(state.codename)
+		modeHint()
+		previewPlan()
+	})
 }
 
-function renderConfigCard(d) {
-	const card = $('config-card')
-	$('config-name').textContent = d.name
-	$('config-meta').textContent = `${d.codename} · ${d.build}`
-	const open = () =>
-		choose({
-			title: 'Flasher config',
-			table: configRows(d),
-			options: [{ value: 'ok', label: 'Close', kind: 'primary' }],
-		})
-	card.addEventListener('click', open)
-	card.addEventListener('keydown', (event) => {
-		if (event.key !== 'Enter' && event.key !== ' ') return
-		event.preventDefault()
-		open()
-	})
+const rememberedConfig = () => {
+	try {
+		return localStorage.getItem(CONFIG_KEY)
+	} catch {
+		return null
+	}
+}
+
+// Paint every piece of the page that depends on the configuration, then let the device check decide
+// whether the connected phone is the right one.
+function renderConfig(d) {
+	document.title = `Flash · ${d.name} (${d.codename})`
+	$('build').textContent = d.build
+	$('build-meta').textContent = [d.codename, d.models?.join('/'), d.ota ? `OTA ${size(d.ota.size)}` : null, d.images ? `images ${size(d.images.size)}` : null, d.addons.length ? `${d.addons.length} add-on${d.addons.length > 1 ? 's' : ''} by file` : null]
+		.filter(Boolean)
+		.join(' · ')
+	const chip = $('build-chip')
+	chip.hidden = false
+	chip.textContent = d.channel === 'latest' ? 'latest build' : (d.channel ?? 'build')
+	chip.classList.toggle('warn', d.channel !== 'latest')
+	renderAddonToggles(d.addons)
+	paintConfigCard(d)
+	if (!d.ota && selectedMode() === 'update') document.querySelector('input[name="mode"][value="clean"]').checked = true
+	if (!d.images && selectedMode() === 'clean' && d.ota) document.querySelector('input[name="mode"][value="update"]').checked = true
+	state.wrong = Boolean(state.codename) && state.codename !== d.codename
+	refreshUi()
+	previewPlan()
+	log(`config: ${d.id} — ${d.codename} · ${d.build} (${d.channel ?? 'build'})`)
+	log(`ota: ${d.ota?.url.split('/').pop() ?? 'not published'} (${d.ota ? size(d.ota.size) : '—'})`)
+	log(`images: ${d.images?.url.split('/').pop() ?? 'not published'} (${d.images ? size(d.images.size) : '—'})`)
+	for (const addon of d.addons) log(`addon: ${addon.name} (${size(addon.size ?? 0)})`)
+}
+
+async function selectConfig(id) {
+	const d = configById(id)
+	if (!d || d === state.config) return
+	state.config = d
+	state.ack = ackStored(d.id)
+	try {
+		localStorage.setItem(CONFIG_KEY, d.id)
+	} catch {
+		// private mode: the page still works, it just forgets the pick
+	}
+	renderConfig(d)
+	if (!state.ack) await acknowledge()
 }
 
 // ---- boot -----------------------------------------------------------------------------
 
-// The page writes to the phone, so nothing runs until the risks are acknowledged. The list comes from
-// `text.risks` in flasher.json; kept in localStorage so it is asked once per browser, not per reload.
-const risks = (config) => config.text?.risks ?? DEFAULT_RISKS
+// The page writes to the phone, so nothing runs until the risks are acknowledged, once per
+// configuration (localStorage).
 
-const ackStored = () => {
+const ackStored = (id) => {
 	try {
-		return localStorage.getItem(ACK_KEY) === '1'
+		return localStorage.getItem(ackKey(id)) === '1'
 	} catch {
 		return false
 	}
@@ -890,8 +899,8 @@ async function acknowledge() {
 	state.ack = true
 	const accepted = await confirmRisks({
 		title: 'Experimental web flasher',
-		body: `Unfinished software talking to your bootloader over WebUSB: it can leave the phone unable to boot and erase your data. Tick all ${risks(state.config).length}.`,
-		items: risks(state.config),
+		body: `Unfinished software talking to your bootloader over WebUSB: it can leave the phone unable to boot and erase your data. Tick all ${DEFAULT_RISKS.length}.`,
+		items: DEFAULT_RISKS,
 	})
 	if (!accepted) {
 		state.ack = false
@@ -900,11 +909,11 @@ async function acknowledge() {
 		return
 	}
 	try {
-		localStorage.setItem(ACK_KEY, '1')
+		localStorage.setItem(ackKey(state.config.id), '1')
 	} catch {
 		log('risk list accepted (localStorage unavailable, will ask again next reload)')
 	}
-	log('risk list acknowledged')
+	log(`risk list acknowledged for ${state.config.id}`)
 	say('Warnings accepted.', 'ok')
 	refreshUi()
 }
@@ -916,26 +925,13 @@ async function init() {
 		return
 	}
 	try {
-		state.config = await loadConfig()
+		state.configs = await loadConfigs()
 	} catch (err) {
 		say(`config: ${err.message}`, 'err')
 		return
 	}
-	const d = state.config
-	applyText(d, { page: 'Flash' })
 
-	$('build').textContent = d.build
-	$('build-meta').textContent = [d.codename, d.models?.join('/'), d.ota ? `OTA ${size(d.ota.size)}` : null, d.images ? `images ${size(d.images.size)}` : null, d.addons.length ? `${d.addons.length} add-on${d.addons.length > 1 ? 's' : ''} by file` : null]
-		.filter(Boolean)
-		.join(' · ')
-	const chip = $('build-chip')
-	chip.hidden = false
-	chip.textContent = d.channel === 'latest' ? 'latest build' : (d.channel ?? 'build')
-	chip.classList.toggle('warn', d.channel !== 'latest')
-	renderAddonToggles(d.addons)
-	renderConfigCard(d)
-	previewPlan()
-	if (!d.ota) document.querySelector('input[name="mode"][value="update"]').disabled = true
+	wireConfigCard()
 	for (const radio of document.querySelectorAll('input[name="mode"]')) {
 		radio.addEventListener('change', () => {
 			refreshUi()
@@ -947,26 +943,11 @@ async function init() {
 	$('connect').addEventListener('click', connect)
 	$('to-bootloader').addEventListener('click', toBootloader)
 	$('flash').addEventListener('click', flash)
-	$('grant').addEventListener('click', async () => {
-		try {
-			const device = await adbManager().requestDevice()
-			if (!device) return
-			pendingAdb = device
-			$('grant').hidden = true
-			hint('Access granted — continuing…')
-		} catch (err) {
-			log(`grant: ${err.message}`)
-		}
-	})
-	state.ack = ackStored()
-	refreshUi()
-	if (!state.ack) await acknowledge()
+
+	const first = configById(rememberedConfig()) ?? state.configs[0]
+	await selectConfig(first.id)
 	downloadLog('log-download')
-	log(`device: ${d.codename} — ${d.build} (${d.channel ?? 'build'})`)
-	log(`ota: ${d.ota?.url.split('/').pop() ?? 'not published'} (${d.ota ? size(d.ota.size) : '—'})`)
-	log(`images: ${d.images?.url.split('/').pop() ?? 'not published'} (${d.images ? size(d.images.size) : '—'})`)
-	for (const addon of d.addons) log(`addon: ${addon.name} (${size(addon.size ?? 0)})`)
-	autoConnect().catch((err) => log(`auto-connect: ${err.message}`))
+	autoConnectOnce()
 	watchConnection()
 }
 

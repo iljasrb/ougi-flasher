@@ -1,12 +1,14 @@
 // Tools page: one action by hand — sideload the add-on zip on its own, for repairing an add-on
 // install after the ROM is already on the phone.
-import { adbManager, connectAdb, grantedAdbDevices, rebootAdb } from './lib/adb.mjs'
-import { loadConfig } from './lib/config.mjs'
+import { connectAdb, grantedAdbDevices, rebootAdb } from './lib/adb.mjs'
+import { chooseConfig } from './lib/dialog.mjs'
+import { loadConfigs } from './lib/config.mjs'
 import { lockUi } from './lib/guard.mjs'
 import { every } from './lib/log.mjs'
-import { sideloadWithWait, waitForSideload } from './lib/recovery.mjs'
-import { progress, startRun, step } from './lib/steps.mjs'
-import { $, applyText, cardTitle, hintBox, pageLog, renderKv, size, statusBox } from './lib/ui.mjs'
+import { recoverySession } from './lib/session.mjs'
+import { sideloadWithWait } from './lib/recovery.mjs'
+import { failStep, progress, startRun, step } from './lib/steps.mjs'
+import { $, cardTitle, hintBox, pageLog, paintConfigCard, renderKv, size, statusBox } from './lib/ui.mjs'
 import { pickAddon, shortName } from './lib/addons.mjs'
 
 const { log, download: downloadLog } = pageLog('log')
@@ -21,11 +23,11 @@ const PLAN = [
 	['done', 'Reboot system'],
 ]
 
+let configs = []
 let config = null
 let current = 0 // index into config.addons (a <select> appears when there is more than one)
 let phone = null // the connected adb device ({ adb, name, serial, state })
 let busy = false
-let pendingAdb = null // set by the grant button when recovery shows up as a new USB device
 
 const addon = () => config?.addons[current] ?? null
 
@@ -37,7 +39,7 @@ const refresh = () => {
 	$('package-name').textContent = pkg ? shortName(pkg) : 'No add-on package published'
 	$('package-meta').textContent = pkg
 		? `${size(pkg.size ?? 0)} · sha256 ${(pkg.sha256 ?? 'none').slice(0, 12)}… · pushed with adb sideload`
-		: 'Add one to flasher.json'
+		: 'This configuration has no add-on package'
 	setCard(
 		phone ? (phone.name ?? 'device') : 'Not connected',
 		phone ? (phone.state === 'sideload' ? 'recovery · sideload' : `adb · ${phone.state}`) : 'Booted Android, or recovery sideload',
@@ -50,12 +52,47 @@ const refresh = () => {
 	if (!phone && !busy) say('Press Sideload — it waits for the phone in recovery sideload.')
 }
 
+function wireConfigCard() {
+	$('config-open').addEventListener('click', async () => {
+		const id = await chooseConfig({ configs, current: config.id })
+		if (id) setConfig(id)
+	})
+}
+
+function renderAddonSelect() {
+	const select = $('addon-select')
+	select.replaceChildren(
+		...config.addons.map((item, index) => {
+			const option = document.createElement('option')
+			option.value = String(index)
+			option.textContent = item.title ?? item.label ?? item.name
+			return option
+		}),
+	)
+	select.hidden = config.addons.length < 2
+	select.value = String(current)
+}
+
+function setConfig(id) {
+	const next = configs.find((item) => item.id === id)
+	if (!next) return
+	config = next
+	current = 0
+	document.title = `Tools · ${config.name} (${config.codename})`
+	renderAddonSelect()
+	paintConfigCard(config)
+	log(`tools: config ${config.id} (${config.codename})`)
+	refresh()
+}
+
 function adopt(connected) {
 	phone = connected
 	log(`tools: connected (${connected.state}) to ${connected.name ?? connected.serial ?? 'device'}`)
 	refresh()
 	return connected.adb
 }
+
+const session = recoverySession({ log, hint, adopt })
 
 async function connect() {
 	if (busy) return
@@ -84,24 +121,9 @@ async function ensureSideload() {
 	if (phone?.state === 'device') await rebootAdb(phone.adb, 'sideload')
 	phone = null
 	refresh()
-	const adb = adopt(
-		await waitForSideload(600, {
-			onTick: (i) => {
-				if (i % 15 === 0) say('Waiting for recovery sideload… — on the phone: Apply update → Apply from ADB')
-			},
-			onLog: log,
-			extra: () => {
-				const device = pendingAdb
-				pendingAdb = null
-				return device
-			},
-			onGrant: async () => {
-				if ((await grantedAdbDevices()).length) return
-				$('grant').hidden = false
-			},
-		}),
-	)
-	$('grant').hidden = true
+	const adb = await session.wait(600, (i) => {
+		if (i % 15 === 0) say('Waiting for recovery sideload… — on the phone: Apply update → Apply from ADB')
+	})
 	step('wait', 'done', 'recovery is waiting for a package')
 	return adb
 }
@@ -109,7 +131,7 @@ async function ensureSideload() {
 async function run() {
 	if (busy) return
 	const pkg = addon()
-	if (!pkg) return say('flasher.json has no add-on package.', 'err')
+	if (!pkg) return say('This configuration has no add-on package.', 'err')
 
 	busy = true
 	refresh()
@@ -149,10 +171,9 @@ async function run() {
 		hint('Back arrow, then Reboot system now on the phone.')
 		log('tools: sideload finished')
 	} catch (err) {
-		const failed = document.querySelector('#steps li[data-state="on"]')
-		if (failed) step(failed.dataset.step, 'err', err.message)
-		say(err.message, 'err')
-		log(`tools: sideload failed: ${err.message}`)
+		const message = failStep(err)
+		say(message, 'err')
+		log(`tools: sideload failed: ${message}`)
 	} finally {
 		busy = false
 		lockUi(false)
@@ -163,45 +184,25 @@ async function run() {
 async function init() {
 	if (!navigator.usb) return say('WebUSB unavailable — use Chrome, Edge, Brave or Helium.', 'err')
 	try {
-		config = await loadConfig()
+		configs = await loadConfigs()
 	} catch (err) {
 		return say(`config: ${err.message}`, 'err')
 	}
-	applyText(config, { page: 'Tools' })
-	if (config.addons.length > 1) {
-		const select = document.createElement('select')
-		select.id = 'addon-select'
-		select.className = 'btn'
-		for (const [index, item] of config.addons.entries()) {
-			const option = document.createElement('option')
-			option.value = String(index)
-			option.textContent = item.title ?? item.label ?? item.name
-			select.append(option)
-		}
-		select.addEventListener('change', () => {
-			current = Number(select.value)
-			log(`tools: add-on ${addon()?.name}`)
-			refresh()
-		})
-		$('package-name').before(select)
-	}
-	log(`tools: ${config.addons.length} add-on(s) configured`)
+	wireConfigCard()
+	$('addon-select').addEventListener('change', () => {
+		current = Number($('addon-select').value)
+		log(`tools: add-on ${addon()?.name}`)
+		refresh()
+	})
+	setConfig(configs[0].id)
+	log(`tools: ${configs.length} configuration(s), ${config.addons.length} add-on(s) in ${config.id}`)
 
 	downloadLog('log-download')
 	$('connect').addEventListener('click', connect)
 	$('run').addEventListener('click', run)
-	$('grant').addEventListener('click', async () => {
-		try {
-			const usb = await adbManager().requestDevice()
-			if (!usb) return
-			pendingAdb = usb
-			$('grant').hidden = true
-			hint('Access granted — continuing…')
-		} catch (err) {
-			log(`tools: grant: ${err.message}`)
-		}
-	})
 	refresh()
+	// the step plan is shown before the first run, like the Flash page's preview
+	startRun(PLAN)
 
 	// an already-authorised phone should just work
 	try {
