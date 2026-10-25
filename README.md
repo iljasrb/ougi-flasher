@@ -1,8 +1,7 @@
 # ougi-flasher
 
-WebUSB flasher for custom ROM installs. The page downloads the package, checks its sha256 and writes
-it to the phone from the browser. Nothing is installed on the user's machine and no server is
-involved in the transfer. Chromium only.
+WebUSB flasher for ROM packages. The page downloads the package, and writes
+it to the phone from the browser. Nothing is installed on the user's machine. Chromium only.
 
 `flasher.json` is the manifest: it points at one JSON file per configuration, so a deployment can
 serve several devices or builds without one growing file. Everything device-specific lives in a
@@ -35,10 +34,7 @@ deploy.sh                      rsync deploy, writes version.txt
 
 ## Modes
 
-| mode | what it does |
-|---|---|
-| Update (right) | sideloads the OTA over recovery. Keeps `/data`. |
-| Clean (left, default) | flashes the boot-chain images over fastboot, factory reset in recovery, then sideloads the OTA and add-ons. Wipes data. |
+Modes (Clean, Update) are now hardcoded, but soon will be configurable from the device config.
 
 ## Clean install
 
@@ -47,18 +43,16 @@ The page walks through this; the phone does part of it by hand.
 1. Images: `images.partitions` are read from the additional_images zip by name and flashed to the
    inactive slot, except `images.slotless` ones (`recovery` takes no slot suffix). A missing entry
    stops the run before anything is written.
-2. Factory reset: the browser cannot format partitions, so recovery does it. On the phone:
+2. Factory reset: relying on fastboot wipe commands isn't robust in my opinion, so for now flasher tells user to do a factory reset in the recovery. On the phone:
    Factory Reset → Format data / factory reset → back → Apply update → Apply from ADB. A pending
    Virtual A/B snapshot is cancelled over fastboot first.
-3. ROM: sideload over `sideload-host`. A socket that goes silent after the last block counts as
-   success, because recovery starts verifying before it says so.
+3. ROM: sideload over `sideload-host`.
 4. Add-ons: do not reboot to system yet. Answer **Yes** to the "reboot recovery for additional
    packages" prompt and the page sideloads each add-on. Recovery may warn *Signature verification
    failed* — answer Yes.
 5. Back arrow → Reboot system now.
 
-Firmware is not checked. LineageOS asks for a specific stock firmware version before flashing, and a
-custom ROM's `/vendor` cannot be read to confirm it. Check it once on stock.
+Firmware is currently not checked.
 
 ## Add-ons and updates
 
@@ -74,10 +68,11 @@ Add-on zips are not downloaded by the page. They are not mirrored and the browse
 GitHub release (no CORS), so the user picks the zip. It is hashed and compared to `sha256`; a
 mismatch is logged as *unverified* and still allowed.
 
+Configuring detailed behavior of addon packages and mirror support is planned.
+
 ## Configuration files
 
-`flasher.json` only lists where the configurations are. An entry is a path, a URL, or an inline
-object:
+`flasher.json` only lists where the configurations are:
 
 ```json
 {
@@ -87,7 +82,7 @@ object:
 }
 ```
 
-`configs/bronco-infinity-x.json` holds the device/build data (the file itself is the reference):
+`configs/bronco-infinity-x.json` holds the device/build data:
 
 ```json
 {
@@ -161,32 +156,20 @@ flasher.example.org {
 
 1. Publish the OTA zip and an `additional_images-<tag>.zip` with the boot-chain images that device's
    flash guide uses.
-2. Add `configs/<id>.json` and list it in `flasher.json`. Nothing else changes. The Configuration
-   card on Flash and Tools opens a searchable configuration window.
+2. Add `configs/<id>.json` and list it in `flasher.json`.
 3. `node check-images.mjs path/to/additional_images-<tag>.zip` checks every configuration and that
    the zip holds exactly the listed partitions.
 4. `./check.sh`, then deploy.
 
 ## Limits
 
-- Bootloader unlock cannot be done from a browser.
+- Bootloader unlock cannot be done from a browser. -> will be configurable.
 - The OTA is held in memory as a Blob (~1.9 GB). A download cannot be resumed.
 - Mode comes from the USB interface: `ff/42/03` fastboot, `ff/42/01` adb.
 - Recovery sideload only serves the sideload socket, so the codename cannot be checked there. The
   boot chain is already written by that point.
 - The Flash page asks for a risk acknowledgement once per configuration (`localStorage`) before it
   enables anything, and locks the UI while a flash runs.
-
-## Checks
-
-```sh
-./check.sh
-```
-
-Runs `check-unlock.mjs` (lock words, getvar, add-on detection), `check-sideload.mjs` (the
-sideload reader against a scripted device, including reconnects), `check-paths.mjs` (URL resolution),
-`check-images.mjs` (every configuration through the real loader, plus the image set), then `node --check` and
-`eslint no-undef` over every file.
 
 ## Links
 
