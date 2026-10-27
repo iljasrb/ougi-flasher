@@ -90,5 +90,19 @@ for (const config of configs) {
 	checked++
 }
 
+// A relative config path must resolve against the page, not the origin root: the deployed page
+// lives under /bronco/flasher/ while the packages live under /bronco/latest/.
+const page = 'https://rom.flac.moe/bronco/flasher/index.html'
+globalThis.location = { href: page, origin: new URL(page).origin }
+const manifestConfig = { id: 'x', codename: 'bronco', name: 'x', ota: { url: 'https://rom.flac.moe/bronco/latest/a.zip', size: 1, sha256: '0'.repeat(64) } }
+const askedPaths = []
+globalThis.fetch = async (path) => {
+	askedPaths.push(String(path))
+	return new Response(JSON.stringify(String(path).endsWith('flasher.json') ? { configs: ['configs/x.json'] } : manifestConfig))
+}
+await loadConfigs('flasher.json')
+check('relative config paths resolve against the page', !askedPaths.includes('https://rom.flac.moe/configs/x.json') && askedPaths.includes('https://rom.flac.moe/bronco/flasher/configs/x.json'), askedPaths.join(' '))
+delete globalThis.location
+
 if (!checked) console.log('skipped image zips — none under pkg/ matches a configuration (pass one as an argument)')
 done()
