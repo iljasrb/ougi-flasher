@@ -89,11 +89,9 @@ Configuring detailed behavior of addon packages and mirror support is planned.
   "id": "bronco-infinity-x",
   "codename": "bronco",
   "name": "Motorola ThinkPhone",
-  "build": "Project Infinity X 4.1 · 22.10.2026",
   "channel": "latest",
-  "ota":    { "url": "https://…zip", "size": 1857262831, "sha256": "…" },
-  "images": { "url": "https://…zip", "size": 50158695, "sha256": "…",
-              "partitions": ["boot", "dtbo", "vbmeta", "vbmeta_system", "vendor_boot", "recovery"],
+  "artifacts": "https://…/bronco/latest/latest.json",
+  "images": { "partitions": ["boot", "dtbo", "vbmeta", "vbmeta_system", "vendor_boot", "recovery"],
               "slotless": ["recovery"] },
   "addons": [
     { "title": "MindTheGapps", "name": "MindTheGapps-…zip",
@@ -108,7 +106,12 @@ Configuring detailed behavior of addon packages and mirror support is planned.
 - `codename` must match what the phone reports (`getvar product`, `ro.product.device`). A mismatch
   disables the action button. When the connected phone matches exactly one configuration, that
   configuration is selected automatically.
-- `ota` and `images` need `url`, `size` and `sha256`. `images` also needs `partitions`.
+- `artifacts` points at a small manifest that `publish.sh` writes next to the zips
+  (`latest/latest.json`). It supplies `build`, and `url`, `size`, `sha256` for `ota` and `images`, so
+  publishing a build never needs a config edit. A field set in the config itself wins — that is how
+  a build gets pinned.
+- `ota` and `images` need `url`, `size` and `sha256` (from the manifest or the config). `images`
+  also needs `partitions`.
 - `addons` is a list; the flash card shows one toggle per entry.
 - Page copy — title, brand, caution banner, risk ticks — lives in the HTML pages, not the config.
 - URLs must be absolute, and served from the same origin as the packages.

@@ -12,7 +12,21 @@ import { zipIndex } from './zip.mjs'
 import { check, done } from './check.mjs'
 
 // ---- flasher.json, through the real loader -------------------------------------------
-globalThis.fetch = async (path) => new Response(await readFile(path))
+const local = (await readdir('pkg', { recursive: true }).catch(() => [])).filter((file) => file.endsWith('.zip'))
+// No network in a check: stand in for the manifest publish.sh writes next to the zips. The URLs
+// point at whatever zips are under pkg/, so the contents check below still runs; only the hashes
+// are fake, and the loader only checks their shape.
+const pick = (prefix) => basename(local.filter((file) => basename(file).startsWith(prefix)).sort().pop() ?? `${prefix}fixture.zip`)
+const latest = {
+	build: 'fixture build',
+	ota: { url: `https://rom.flac.moe/bronco/latest/${pick('Project_Infinity-X-')}`, size: 1, sha256: '0'.repeat(64) },
+	images: { url: `https://rom.flac.moe/bronco/latest/${pick('additional_images-')}`, size: 1, sha256: '0'.repeat(64) },
+}
+globalThis.fetch = async (path) => {
+	const file = String(path)
+	if (file.endsWith('/latest.json')) return new Response(JSON.stringify(latest))
+	return new Response(await readFile(file))
+}
 let configs
 try {
 	configs = await loadConfigs()
@@ -35,6 +49,7 @@ for (const config of configs) {
 // The real file above already passed; these use the same valid config as a fixture and a mocked
 // fetch, so adding a second configuration cannot quietly break the loader.
 const fixture = structuredClone(configs[0])
+delete fixture.artifacts // already resolved above; the fixture tests mock no manifest
 const respond = (body) => {
 	globalThis.fetch = async () => new Response(JSON.stringify(body))
 }
@@ -56,7 +71,6 @@ try {
 check('rejects duplicate configuration ids', duplicate)
 
 // ---- each configuration's zip against its contents ----------------------------------
-const local = (await readdir('pkg', { recursive: true }).catch(() => [])).filter((file) => file.endsWith('.zip'))
 const explicit = process.argv[2] ?? null
 let checked = 0
 

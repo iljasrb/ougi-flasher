@@ -7,17 +7,9 @@
 		"XT2309-2",
 		"XT2309-3"
 	],
-	"build": "Project Infinity X 4.1 · 22.10.2026",
 	"channel": "latest",
-	"ota": {
-		"url": "https://rom.flac.moe/bronco/latest/Project_Infinity-X-4.1-bronco-22.10.2026-VANILLA-UNOFFICIAL.zip",
-		"size": 1857262831,
-		"sha256": "beea96f4553d668a8fcccd8740fa65b2d744977382ac96527dcb13cfc4f2819b"
-	},
+	"artifacts": "https://rom.flac.moe/bronco/latest/latest.json",
 	"images": {
-		"url": "https://rom.flac.moe/bronco/latest/additional_images-22.10.2026.zip",
-		"size": 50158695,
-		"sha256": "df1d3fccb32a1ab19912236ec8e64eff824c4a1a6df3190f9d0c4b6c02c21ae5",
 		"partitions": [
 			"boot",
 			"dtbo",
