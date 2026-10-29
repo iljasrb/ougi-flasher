@@ -22,7 +22,7 @@ lib/flash.mjs                  download, sha256, image read/flash, push to /sdca
 lib/adb.mjs                    connect, props, reboot, sideload-host
 lib/recovery.mjs               wait for sideload mode, retry after a reconnect
 lib/session.mjs                sideload wait, grant button, reconnect
-lib/addons.mjs                 pick and hash an add-on zip
+lib/addons.mjs                 pick or download an add-on zip, hash it
 lib/ui.mjs, lib/dialog.mjs     tables, status boxes, dialogs
 lib/term.js                    terminal pane
 zip.mjs                        reads zip entries
@@ -49,7 +49,8 @@ The page walks through this; the phone does part of it by hand.
 3. ROM: sideload over `sideload-host`.
 4. Add-ons: do not reboot to system yet. Answer **Yes** to the "reboot recovery for additional
    packages" prompt and the page sideloads each add-on. Recovery may warn *Signature verification
-   failed* — answer Yes.
+   failed* — answer Yes. AERA recovery goes on here too (it is a toggle; the page downloads it), so
+   it lands after the ROM that would otherwise overwrite it.
 5. Back arrow → Reboot system now.
 
 Firmware is currently not checked.
@@ -67,6 +68,13 @@ package ids:
 Add-on zips are not downloaded by the page. They are not mirrored and the browser cannot read a
 GitHub release (no CORS), so the user picks the zip. It is hashed and compared to `sha256`; a
 mismatch is logged as *unverified* and still allowed.
+
+An add-on that *is* mirrored carries a `url` and the page downloads it itself. That is how the AERA
+recovery package goes on: it needs no picking, no `detect` (a recovery partition has no package id)
+and `always: true` says a ROM install overwrites it every time — so it is sideloaded again after
+every clean install and every update, and the “use the Updater instead” path is skipped for it. Its
+installer writes `recovery_a` and `recovery_b`, which is the only way it survives the slot switch;
+a single `fastboot flash recovery` does not.
 
 Configuring detailed behavior of addon packages and mirror support is planned.
 
@@ -94,6 +102,8 @@ Configuring detailed behavior of addon packages and mirror support is planned.
   "images": { "partitions": ["boot", "dtbo", "vbmeta", "vbmeta_system", "vendor_boot", "recovery"],
               "slotless": ["recovery"] },
   "addons": [
+    { "title": "AERA Recovery", "source": "https://…/aera/latest/",
+      "artifacts": "https://…/aera/latest/latest.json", "pick": "installer", "always": true },
     { "title": "MindTheGapps", "name": "MindTheGapps-…zip",
       "source": "https://github.com/…/releases/latest", "size": 544284463, "sha256": "…",
       "detect": ["com.google.android.gms", "com.android.vending"] }
@@ -112,7 +122,11 @@ Configuring detailed behavior of addon packages and mirror support is planned.
   a build gets pinned.
 - `ota` and `images` need `url`, `size` and `sha256` (from the manifest or the config). `images`
   also needs `partitions`.
-- `addons` is a list; the flash card shows one toggle per entry.
+- `addons` is a list; the flash card shows one toggle per entry, unticked unless chosen. `url`,
+  `size` and `sha256` make the page download it (mirrored); `artifacts` + `pick` take them from the
+  project's own manifest (`latest.json`, key `installer` here) so a new build needs no config edit:
+  `name` then defaults to the published file name. `detect` lists the package ids that mean
+  *installed*; `always` means it cannot be detected and is re-sideloaded after every ROM install.
 - Page copy — title, brand, caution banner, risk ticks — lives in the HTML pages, not the config.
 - URLs must be absolute, and served from the same origin as the packages.
 

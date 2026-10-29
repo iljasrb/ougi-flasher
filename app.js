@@ -52,7 +52,7 @@ async function cancelPendingSnapshot(dev) {
 
 // ---- step plans -----------------------------------------------------------------------
 
-const pickSteps = (addons) => addons.map((addon, index) => [`pick${index}`, `Choose the ${shortName(addon, index)} zip`])
+const pickSteps = (addons) => addons.map((addon, index) => [`pick${index}`, addon.url ? `Download ${shortName(addon, index)}` : `Choose the ${shortName(addon, index)} zip`])
 // One recovery session installs every add-on in sequence; only the first one needs the reboot.
 const installSteps = (addons) =>
 	addons.flatMap((addon, index) => [...(index ? [] : [['reboot', 'Reboot to recovery']]), [`addon${index}`, `Sideload ${shortName(addon, index)}`]])
@@ -116,7 +116,7 @@ function renderAddonToggles(addons) {
 		const strong = document.createElement('strong')
 		strong.textContent = `Include ${addon.title ?? 'add-on'}`
 		const meta = document.createElement('em')
-		meta.textContent = addon.size ? `${size(addon.size)} · you pick the zip` : 'you pick the zip'
+		meta.textContent = [addon.size ? size(addon.size) : null, addon.url ? 'downloaded from the mirror' : 'you pick the zip'].filter(Boolean).join(' · ')
 		text.append(strong, meta)
 		wrap.append(box, text)
 		modes.append(wrap)
@@ -387,14 +387,17 @@ async function reconnectSideload(onWait) {
 // ---- update: find the add-ons that are installed, then pick the path --------------------
 
 // Which configured add-ons look installed? Only answerable over adb from a booted phone; an add-on
-// with no `detect` ids cannot be checked at all.
+// with no `detect` ids cannot be checked at all. `always` add-ons are never checked either: a
+// recovery partition has no package id and every ROM install overwrites it, so it always goes on
+// again.
 async function detectAddons() {
-	const addons = state.config.addons
-	if (!addons.length) return { present: [], unknown: [] }
-	if (!state.adb || state.adbState !== 'device') return { present: [], unknown: addons }
+	const always = state.config.addons.filter((addon) => addon.always)
+	const checkable = state.config.addons.filter((addon) => !addon.always)
+	if (!checkable.length) return { present: [], unknown: [], always }
+	if (!state.adb || state.adbState !== 'device') return { present: [], unknown: checkable, always }
 	const present = []
 	const unknown = []
-	for (const addon of addons) {
+	for (const addon of checkable) {
 		if (!addon.detect?.length) {
 			unknown.push(addon)
 			continue
@@ -404,7 +407,7 @@ async function detectAddons() {
 		if (result.state === 'present') present.push(addon)
 		if (result.state === 'unknown') unknown.push(addon)
 	}
-	return { present, unknown }
+	return { present, unknown, always }
 }
 
 const names = (addons) => addons.map((addon, i) => shortName(addon, i)).join(', ')
@@ -412,7 +415,7 @@ const names = (addons) => addons.map((addon, i) => shortName(addon, i)).join(', 
 // Recovery never runs addon.d, so an update with add-ons installed would break them. Returns the
 // add-ons to re-push, or null when the user aborts.
 async function pickUpdatePath() {
-	const { present, unknown } = await detectAddons()
+	const { present, unknown, always } = await detectAddons()
 	let repush = present
 	if (unknown.length) {
 		const choice = await choose({
@@ -427,9 +430,15 @@ async function pickUpdatePath() {
 		if (!choice) return null
 		if (choice === 'present') repush = [...present, ...unknown]
 	}
-	if (!repush.length) {
+	if (!repush.length && !always.length) {
 		log('update: no add-on packages, going straight to sideload')
 		return []
+	}
+	// The ROM's Updater keeps add-on packages through addon.d, but it rewrites the recovery
+	// partition like a sideload does, so an `always` add-on would be gone: sideload instead.
+	if (always.length) {
+		log(`update: ${names(always)} is rewritten by any update — sideloading it again after the ROM`)
+		return [...repush, ...always]
 	}
 	const choice = await choose({
 		title: `${names(repush)} installed`,

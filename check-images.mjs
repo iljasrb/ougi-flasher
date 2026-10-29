@@ -4,7 +4,7 @@
 //
 //   node check-images.mjs                   # every config with a matching zip under pkg/
 //   node check-images.mjs /path/to/zip      # an explicit archive, matched to its config by name
-import { basename } from 'node:path'
+import { basename, join } from 'node:path'
 import { readdir, readFile } from 'node:fs/promises'
 import { loadConfigs } from './lib/config.mjs'
 import { readImages } from './lib/flash.mjs'
@@ -12,7 +12,8 @@ import { zipIndex } from './zip.mjs'
 import { check, done } from './check.mjs'
 
 // ---- flasher.json, through the real loader -------------------------------------------
-const local = (await readdir('pkg', { recursive: true }).catch(() => [])).filter((file) => file.endsWith('.zip'))
+// readdir() answers relative to pkg/, so the paths are made readable from here
+const local = (await readdir('pkg', { recursive: true }).catch(() => [])).filter((file) => file.endsWith('.zip')).map((file) => join('pkg', file))
 // No network in a check: stand in for the manifest publish.sh writes next to the zips. The URLs
 // point at whatever zips are under pkg/, so the contents check below still runs; only the hashes
 // are fake, and the loader only checks their shape.
@@ -21,6 +22,7 @@ const latest = {
 	build: 'fixture build',
 	ota: { url: `https://rom.flac.moe/bronco/latest/${pick('Project_Infinity-X-')}`, size: 1, sha256: '0'.repeat(64) },
 	images: { url: `https://rom.flac.moe/bronco/latest/${pick('additional_images-')}`, size: 1, sha256: '0'.repeat(64) },
+	installer: { url: 'https://rom.flac.moe/bronco/recovery/aera/latest/AERA-bronco-fixture.zip', size: 1, sha256: '0'.repeat(64) },
 }
 globalThis.fetch = async (path) => {
 	const file = String(path)
@@ -50,6 +52,7 @@ for (const config of configs) {
 // fetch, so adding a second configuration cannot quietly break the loader.
 const fixture = structuredClone(configs[0])
 delete fixture.artifacts // already resolved above; the fixture tests mock no manifest
+for (const addon of fixture.addons) delete addon.artifacts
 const respond = (body) => {
 	globalThis.fetch = async () => new Response(JSON.stringify(body))
 }
@@ -69,6 +72,22 @@ try {
 	duplicate = true
 }
 check('rejects duplicate configuration ids', duplicate)
+
+// ---- a mirrored add-on takes url/size/sha256 from its own project's manifest -------------
+const aeraLatest = { build: '74', image: { url: 'x', size: 1, sha256: '0'.repeat(64) }, installer: { url: 'https://rom.flac.moe/aera/AERA-bronco-74-split.zip', size: 53181146, sha256: '1'.repeat(64) } }
+globalThis.fetch = async (path) => new Response(JSON.stringify(String(path).endsWith('aera.json') ? aeraLatest : { configs: [mirrored] }))
+const mirrored = {
+	id: 'mirror',
+	codename: 'bronco',
+	name: 'x',
+	ota: { url: 'https://rom.flac.moe/bronco/latest/a.zip', size: 1, sha256: '0'.repeat(64) },
+	addons: [{ title: 'AERA', source: 'https://rom.flac.moe/aera/', artifacts: 'https://rom.flac.moe/aera/aera.json', pick: 'installer', always: true }],
+}
+const [pulled] = await loadConfigs('mirrored.json')
+const addon = pulled.addons[0]
+check('a mirrored add-on gets url, size and sha256 from its manifest', addon.url === aeraLatest.installer.url && addon.size === aeraLatest.installer.size && addon.sha256 === aeraLatest.installer.sha256, addon.url)
+check('a mirrored add-on is named after the published file', addon.name === 'AERA-bronco-74-split.zip', addon.name)
+check('a mirrored add-on keeps its config fields', addon.always === true && addon.pick === 'installer', JSON.stringify([addon.always, addon.pick]))
 
 // ---- each configuration's zip against its contents ----------------------------------
 const explicit = process.argv[2] ?? null

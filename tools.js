@@ -136,9 +136,9 @@ async function run() {
 	busy = true
 	refresh()
 	lockUi(true, 'A sideload is running.')
-	startRun(PLAN)
+	startRun([[PLAN[0][0], pkg.url ? `Download ${shortName(pkg)}` : PLAN[0][1]], ...PLAN.slice(1)])
 	try {
-		// not mirrored, and a static page cannot read a GitHub release: pick it and hash it here
+		// mirrored zips are downloaded and hashed in pickAddon; the rest are picked and hashed here
 		const file = await pickAddon('download', pkg, log)
 		hint('')
 

@@ -24,6 +24,13 @@
 	},
 	"addons": [
 		{
+			"title": "AERA Recovery",
+			"source": "https://rom.flac.moe/bronco/recovery/aera/latest/",
+			"artifacts": "https://rom.flac.moe/bronco/recovery/aera/latest/latest.json",
+			"pick": "installer",
+			"always": true
+		},
+		{
 			"title": "MindTheGapps",
 			"label": "MindTheGapps 17.0.0 arm64 · 22.10.2026",
 			"name": "MindTheGapps-17.0.0-arm64-20261022_132445.zip",
