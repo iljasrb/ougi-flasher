@@ -17,19 +17,31 @@
 			"vbmeta_system",
 			"vendor_boot",
 			"recovery"
-		],
-		"slotless": [
-			"recovery"
 		]
 	},
-	"addons": [
+	"recoveries": [
 		{
 			"title": "AERA Recovery",
+			"kind": "zip",
 			"source": "https://rom.flac.moe/bronco/recovery/aera/latest/",
 			"artifacts": "https://rom.flac.moe/bronco/recovery/aera/latest/latest.json",
-			"pick": "installer",
-			"always": true
+			"pick": "installer"
 		},
+		{
+			"title": "Skyward Recovery",
+			"kind": "image",
+			"source": "https://github.com/iljasrb/skyward/releases/latest",
+			"github": {
+				"repo": "iljasrb/skyward",
+				"asset": "skyward-bronco.img",
+				"tag": "^bronco-"
+			},
+			"name": "skyward-bronco.img",
+			"size": 104857600,
+			"sha256": "c925956d42549fde660518695cf4ca5b1ad62ee17b589b9091ead1dd3176b92c"
+		}
+	],
+	"addons": [
 		{
 			"title": "MindTheGapps",
 			"label": "MindTheGapps 17.0.0 arm64 · 22.10.2026",
