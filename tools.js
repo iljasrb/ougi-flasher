@@ -17,7 +17,7 @@ const hint = hintBox('hint')
 const setCard = cardTitle('device-name', 'device-meta')
 
 const PLAN = [
-	['download', 'Choose the add-on zip'],
+	['download', 'Choose the package'],
 	['wait', 'Get the phone into recovery sideload'],
 	['flash', 'Sideload the add-on'],
 	['done', 'Reboot system'],
@@ -25,21 +25,25 @@ const PLAN = [
 
 let configs = []
 let config = null
-let current = 0 // index into config.addons (a <select> appears when there is more than one)
+let current = 0 // index into packages() (a <select> appears when there is more than one)
 let phone = null // the connected adb device ({ adb, name, serial, state })
 let busy = false
 
-const addon = () => config?.addons[current] ?? null
+// Zip recoveries are installable here too; an image recovery needs the bootloader, so it lives on
+// the Flash page only.
+const packages = () => [...(config?.addons ?? []), ...(config?.recoveries ?? []).filter((item) => item.kind !== 'image')]
+const addon = () => packages()[current] ?? null
 
 const refresh = () => {
 	const pkg = addon()
 	$('connect').disabled = busy
+	$('config-open').disabled = busy
 	$('connect').textContent = phone ? 'Disconnect' : 'Connect'
 	$('run').disabled = busy || !pkg
-	$('package-name').textContent = pkg ? shortName(pkg) : 'No add-on package published'
+	$('package-name').textContent = pkg ? shortName(pkg) : 'No sideloadable package published'
 	$('package-meta').textContent = pkg
 		? `${size(pkg.size ?? 0)} · sha256 ${(pkg.sha256 ?? 'none').slice(0, 12)}… · pushed with adb sideload`
-		: 'This configuration has no add-on package'
+		: 'This configuration has no add-on or zip recovery package'
 	setCard(
 		phone ? (phone.name ?? 'device') : 'Not connected',
 		phone ? (phone.state === 'sideload' ? 'recovery · sideload' : `adb · ${phone.state}`) : 'Booted Android, or recovery sideload',
@@ -61,15 +65,16 @@ function wireConfigCard() {
 
 function renderAddonSelect() {
 	const select = $('addon-select')
+	const list = packages()
 	select.replaceChildren(
-		...config.addons.map((item, index) => {
+		...list.map((item, index) => {
 			const option = document.createElement('option')
 			option.value = String(index)
 			option.textContent = item.title ?? item.label ?? item.name
 			return option
 		}),
 	)
-	select.hidden = config.addons.length < 2
+	select.hidden = list.length < 2
 	select.value = String(current)
 }
 
@@ -131,7 +136,7 @@ async function ensureSideload() {
 async function run() {
 	if (busy) return
 	const pkg = addon()
-	if (!pkg) return say('This configuration has no add-on package.', 'err')
+	if (!pkg) return say('This configuration has no sideloadable package.', 'err')
 
 	busy = true
 	refresh()
@@ -139,14 +144,15 @@ async function run() {
 	startRun([[PLAN[0][0], pkg.url ? `Download ${shortName(pkg)}` : PLAN[0][1]], ...PLAN.slice(1)])
 	try {
 		// mirrored zips are downloaded and hashed in pickAddon; the rest are picked and hashed here
-		const file = await pickAddon('download', pkg, log)
+		const strict = Boolean(config.recoveries?.includes(pkg))
+		const file = await pickAddon('download', pkg, log, { strict })
 		hint('')
 
 		let adb = await ensureSideload()
 
 		step('flash', 'on', 'sideloading…')
 		say('Sideloading the add-on…')
-		hint('Recovery may say “Signature verification failed” during this install — tap Yes. Add-ons are not signed with the ROM’s key.')
+		hint('Recovery may say “Signature verification failed” during this install — tap Yes. Packages are not signed with the ROM’s key.')
 		const logSideload = every(log, 'sideload', 10)
 		const transfer = await sideloadWithWait(adb, file, {
 			label: 'add-on sideload',
@@ -165,9 +171,9 @@ async function run() {
 		})
 		log(`tools: transfer ${transfer.sent} bytes (device said done: ${transfer.confirmed})`)
 
-		step('flash', 'done', 'add-on installed')
+		step('flash', 'done', 'package installed')
 		step('done', 'done', 'on the phone: back arrow → Reboot system now')
-		say('Add-on installed. On the phone: back arrow, then Reboot system now.', 'ok')
+		say('Package installed. On the phone: back arrow, then Reboot system now.', 'ok')
 		hint('Back arrow, then Reboot system now on the phone.')
 		log('tools: sideload finished')
 	} catch (err) {
@@ -195,7 +201,7 @@ async function init() {
 		refresh()
 	})
 	setConfig(configs[0].id)
-	log(`tools: ${configs.length} configuration(s), ${config.addons.length} add-on(s) in ${config.id}`)
+	log(`tools: ${configs.length} configuration(s), ${packages().length} sideloadable package(s) in ${config.id}`)
 
 	downloadLog('log-download')
 	$('connect').addEventListener('click', connect)

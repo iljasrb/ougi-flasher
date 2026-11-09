@@ -8,17 +8,18 @@ import { choose, chooseConfig, confirmRisks } from './lib/dialog.mjs'
 import { loadConfigs } from './lib/config.mjs'
 import { pickAddon, shortName } from './lib/addons.mjs'
 import { lockUi } from './lib/guard.mjs'
+import { plans } from './lib/plans.mjs'
 import { every } from './lib/log.mjs'
 import { recoverySession } from './lib/session.mjs'
 import { sideloadWithWait } from './lib/recovery.mjs'
 import { failStep, progress, startRun, step } from './lib/steps.mjs'
 import { $, cardTitle, DEFAULT_RISKS, hintBox, pageLog, paintConfigCard, renderKv, size, statusBox } from './lib/ui.mjs'
-import { attachFastboot, grantedDevices, pickDevice, readFastbootInfo, watchUsb } from './lib/usb.mjs'
+import { attachFastboot, grantedDevices, pickDevice, readFastbootInfo, sanitizeVar, watchUsb } from './lib/usb.mjs'
 
 const ACK_KEY = 'ougi-flasher:risk-ack-v2'
 const CONFIG_KEY = 'ougi-flasher:config'
 const ackKey = (id) => `${ACK_KEY}:${id}`
-const state = { mode: null, adbState: null, dev: null, adb: null, configs: [], config: null, codename: null, wrong: false, busy: false, ack: false }
+const state = { mode: null, adbState: null, dev: null, adb: null, serial: null, configs: [], config: null, codename: null, wrong: false, busy: false, ack: false, recovery: null }
 
 // ---- ui -------------------------------------------------------------------------------
 
@@ -52,58 +53,31 @@ async function cancelPendingSnapshot(dev) {
 
 // ---- step plans -----------------------------------------------------------------------
 
-const pickSteps = (addons) => addons.map((addon, index) => [`pick${index}`, addon.url ? `Download ${shortName(addon, index)}` : `Choose the ${shortName(addon, index)} zip`])
-// One recovery session installs every add-on in sequence; only the first one needs the reboot.
-const installSteps = (addons) =>
-	addons.flatMap((addon, index) => [...(index ? [] : [['reboot', 'Reboot to recovery']]), [`addon${index}`, `Sideload ${shortName(addon, index)}`]])
-
-const plans = {
-	update: (addons) => [
-		['check', 'Device check'],
-		['download', 'Download OTA'],
-		...pickSteps(addons),
-		['flash', 'Sideload OTA'],
-		...installSteps(addons),
-		['done', addons.length ? 'Reboot system' : 'Finish'],
-	],
-	local: () => [
-		['check', 'Device check'],
-		['download', 'Download OTA'],
-		['copy', 'Copy to the phone'],
-		['done', 'Finish in the Updater'],
-	],
-	clean: (addons) => [
-		['check', 'Device check'],
-		['download', 'Download additional images'],
-		['otadl', 'Download OTA'],
-		...pickSteps(addons),
-		['flash', 'Flash additional images'],
-		['reset', 'Factory data reset (on the phone)'],
-		['rom', 'Sideload ROM'],
-		...installSteps(addons),
-		['done', 'Reboot system'],
-	],
-}
-
 const selectedMode = () => document.querySelector('input[name="mode"]:checked')?.value ?? 'clean'
-const addonBoxes = () => [...document.querySelectorAll('#modes input[data-addon]')]
+const addonBoxes = () => [...document.querySelectorAll('#addons input[data-addon]')]
 const chosenAddons = () =>
 	addonBoxes()
 		.filter((box) => box.checked)
 		.map((box) => state.config.addons[Number(box.dataset.addon)])
+const recoveryBoxes = () => [...document.querySelectorAll('#recoveries input[data-recovery]')]
+const chosenRecovery = () => (state.recovery == null ? null : (state.config?.recoveries?.[state.recovery] ?? null))
 
-// The step list is the plan of the current selection, so ticking an add-on shows the extra steps
-// before anything runs (never during a run — that would wipe its progress).
+// The step list is the plan of the current selection, so ticking an add-on or a recovery shows the
+// extra steps before anything runs (never during a run — that would wipe its progress).
 function previewPlan() {
 	if (state.busy || !state.config) return
-	startRun(plans[selectedMode()](chosenAddons()))
+	// Update decides which add-ons to re-push at run time (detect + dialogs), so its preview shows
+	// only the OTA and the chosen recovery; the real plan replaces it when the run starts.
+	const addons = selectedMode() === 'update' ? [] : chosenAddons()
+	startRun(plans[selectedMode()](addons, chosenRecovery()))
 }
 
 // One checkbox per configured add-on, rendered from the selected configuration so a second add-on
 // needs no HTML.
 function renderAddonToggles(addons) {
-	const modes = $('modes')
-	for (const old of modes.querySelectorAll('.addon-toggle')) old.remove()
+	const list = $('addons')
+	list.replaceChildren()
+	list.hidden = !addons.length
 	for (const [index, addon] of addons.entries()) {
 		const wrap = document.createElement('label')
 		wrap.className = 'mode span addon-toggle'
@@ -119,7 +93,43 @@ function renderAddonToggles(addons) {
 		meta.textContent = [addon.size ? size(addon.size) : null, addon.url ? 'downloaded from the mirror' : 'you pick the zip'].filter(Boolean).join(' · ')
 		text.append(strong, meta)
 		wrap.append(box, text)
-		modes.append(wrap)
+		list.append(wrap)
+	}
+}
+
+// Recoveries are a radio group, not checkboxes: a ROM install overwrites the recovery partition, so
+// exactly one variant may be written after it. "None" keeps whatever the ROM installs.
+function renderRecoveryToggles(recoveries) {
+	const list = $('recoveries')
+	list.replaceChildren()
+	list.hidden = !recoveries.length
+	if (!recoveries.length) return
+	const add = (value, title, meta) => {
+		const wrap = document.createElement('label')
+		wrap.className = 'mode span recovery-toggle'
+		const box = document.createElement('input')
+		box.type = 'radio'
+		box.name = 'recovery'
+		box.value = value
+		box.dataset.recovery = value
+		box.checked = value === 'none' ? state.recovery == null : state.recovery === Number(value)
+		box.addEventListener('change', () => {
+			state.recovery = value === 'none' ? null : Number(value)
+			previewPlan()
+		})
+		const text = document.createElement('span')
+		const strong = document.createElement('strong')
+		strong.textContent = title
+		const detail = document.createElement('em')
+		detail.textContent = meta
+		text.append(strong, detail)
+		wrap.append(box, text)
+		list.append(wrap)
+	}
+	add('none', 'No custom recovery', 'keep whatever recovery the ROM installs')
+	for (const [index, recovery] of recoveries.entries()) {
+		const kind = recovery.kind === 'image' ? 'image · flashed with fastboot' : 'zip · installed with sideload'
+		add(String(index), recovery.title ?? recovery.name, [recovery.size ? size(recovery.size) : null, kind].filter(Boolean).join(' · '))
 	}
 }
 
@@ -128,6 +138,7 @@ function refreshUi() {
 	const update = selectedMode() === 'update'
 	const d = state.config
 	$('connect').disabled = offline
+	$('config-open').disabled = offline
 	$('to-bootloader').hidden = state.mode !== 'adb' || state.adbState !== 'device'
 	$('to-bootloader').disabled = offline
 	$('flash').textContent = update ? 'Update' : 'Flash'
@@ -138,11 +149,12 @@ function refreshUi() {
 	const ready = update ? adbUsable || state.mode === 'fastboot' : state.mode === 'fastboot' && Boolean(d?.images)
 	$('flash').disabled = offline || !ready || !state.ack || state.wrong
 	// Add-ons are only sideloaded as part of a clean install; the update path detects what is on the
-	// phone instead of asking, so the tiles leave with Update.
-	for (const box of addonBoxes()) {
-		box.closest('.mode').hidden = update
-		box.disabled = offline
-	}
+	// phone instead of asking, so the tiles leave with Update. Recovery variants stay visible: an
+	// update can reinstall one after the ROM.
+	$('addons').hidden = update || !d?.addons?.length
+	for (const box of addonBoxes()) box.disabled = offline
+	$('recoveries').hidden = !d?.recoveries?.length
+	for (const box of recoveryBoxes()) box.disabled = offline
 	for (const radio of document.querySelectorAll('input[name="mode"]')) {
 		radio.disabled = offline || (radio.value === 'update' ? !d?.ota : !d?.images)
 	}
@@ -151,6 +163,7 @@ function refreshUi() {
 
 function busy(on) {
 	state.busy = on
+	$('grant-fastboot').hidden = true
 	lockUi(on, 'A flash is running — leaving now aborts it and can leave the slot half-written.')
 	refreshUi()
 }
@@ -160,8 +173,10 @@ function reset() {
 	state.adbState = null
 	state.dev = null
 	state.adb = null
+	state.serial = null
 	state.codename = null
 	state.wrong = false
+	$('grant-fastboot').hidden = true
 	renderDevice([['State', 'not connected']])
 	setCard('Not connected', '')
 	refreshUi()
@@ -174,9 +189,11 @@ function modeHint() {
 	if (!state.mode || state.wrong) return
 	const update = selectedMode() === 'update'
 	if (state.adbState === 'sideload') return say('Recovery is waiting for a package — Update can send it now.', 'ok')
+	if (state.adbState === 'recovery') return say('Recovery adb — Update reboots it to sideload.', 'ok')
 	if (state.adbState === 'unauthorized' || state.adbState === 'authorizing') {
 		return say('Allow the USB debugging prompt on the phone to use adb.', 'err')
 	}
+	if (state.adbState === 'offline') return say('adb is offline — reconnect the phone.', 'err')
 	if (update && state.mode === 'adb') say('Ready to sideload the update.', 'ok')
 	else if (!update && state.mode === 'fastboot') say('Ready to clean flash.', 'ok')
 	else if (update) say('Ready: Update reboots to recovery first.', 'ok')
@@ -211,6 +228,7 @@ async function useFastboot(usb) {
 	state.dev = await attachFastboot(usb)
 	state.mode = 'fastboot'
 	const { rows, info } = await readFastbootInfo(state.dev)
+	state.serial = info.serial
 	log(`fastboot: product=${info.product} slot=${info.slot} unlocked=${info.unlocked}`)
 	renderDevice([['Mode', 'fastboot'], ...rows])
 	setCard(info.product ?? state.config.name, `bootloader · slot ${info.slot ?? '?'} · ${info.unlocked}`)
@@ -238,13 +256,26 @@ async function useAdb(device) {
 	state.adb = adb
 	state.mode = 'adb'
 	state.adbState = adbState
-	if (adbState !== 'device') {
+	state.serial = serial ?? null
+	if (adbState === 'sideload') {
 		// adbd in recovery/sideload only serves the sideload socket — `shell:` is closed, so there
 		// are no props to read. Show what the banner does tell us instead.
-		renderDevice([['Mode', `recovery (${adbState})`], ['Serial', serial ?? '—'], ['State', 'ready for a package']])
-		setCard(name ?? 'recovery', `recovery · ${adbState}`)
+		renderDevice([['Mode', 'recovery (sideload)'], ['Serial', serial ?? '—'], ['State', 'ready for a package']])
+		setCard(name ?? 'recovery', 'recovery · sideload')
 		say('Recovery sideload ready.', 'ok')
 		refreshUi()
+		modeHint()
+		return
+	}
+	if (adbState !== 'device' && adbState !== 'recovery') {
+		// unauthorized/authorizing/offline: the phone is not usable yet, so do not pretend recovery
+		// is ready. The user has to accept the debugging prompt (or replug) first.
+		const waiting = adbState === 'unauthorized' || adbState === 'authorizing'
+		renderDevice([['Mode', `adb (${adbState})`], ['Serial', serial ?? '—'], ['State', waiting ? 'allow USB debugging on the phone' : adbState]])
+		setCard(name ?? 'adb', `adb · ${adbState}`)
+		say(waiting ? 'Allow the USB debugging prompt on the phone.' : `adb is ${adbState} — reconnect the phone.`, 'err')
+		refreshUi()
+		modeHint()
 		return
 	}
 	log(`adb: state=${adbState}`)
@@ -319,6 +350,7 @@ async function toBootloader() {
 		say('Rebooting to the bootloader…')
 		await rebootAdb(state.adb, 'bootloader')
 		state.adb = null
+		state.serial = null
 		state.mode = null
 		refreshUi()
 		await waitForFastboot()
@@ -338,13 +370,36 @@ async function waitForFastboot(seconds = 45) {
 	throw new Error('no fastboot device appeared — replug the cable')
 }
 
+// Same wait, but without adopting the device into the page's connection card: a recovery image is
+// flashed from the bootloader mid-run and the run owns the UI. A bootloader that was never granted
+// (an update started from adb) needs a gesture, hence the "Allow bootloader" button.
+async function waitForFastbootDevice(seconds = 180, onWait = () => {}) {
+	for (let i = 0; i < seconds; i++) {
+		const found = (await grantedDevices()).find((d) => d.mode === 'fastboot')
+		if (found) {
+			$('grant-fastboot').hidden = true
+			try {
+				return await attachFastboot(found.usb)
+			} catch (err) {
+				// another open can still hold the interface for a moment; try again next second
+				log(`bootloader: attach failed: ${err.message}`)
+			}
+		}
+		if (i === 0) $('grant-fastboot').hidden = false
+		onWait(i)
+		await new Promise((resolve) => setTimeout(resolve, 1000))
+	}
+	$('grant-fastboot').hidden = true
+	throw new Error('no fastboot device appeared — replug the cable or grant the bootloader')
+}
+
 // Recovery advertises its own USB identity (18d1:d001 vs 18d1:4e11), so WebUSB permission is not
 // inherited from the Android one and getDevices() stays empty until the user grants it once. The
 // picker cannot be opened without a gesture, hence the "Allow recovery adb" button.
 // `fastboot reboot-sideload` would save the manual Apply update → Apply from ADB dance, but this
 // bootloader does not implement it, so ask for plain `reboot recovery` and let the user pick.
 async function rebootToRecovery(stepId, { dev = state.dev, wait = 600 } = {}) {
-	log(`fastboot reboot recovery (serial ${dev?.serial ?? '?'})`)
+	log(`fastboot reboot recovery (serial ${state.serial ?? '?'})`)
 	step(stepId, 'on', 'rebooting to recovery…')
 	say('Rebooting the phone to recovery…')
 	try {
@@ -354,6 +409,7 @@ async function rebootToRecovery(stepId, { dev = state.dev, wait = 600 } = {}) {
 		throw new Error('this bootloader refused “reboot recovery” — pick Recovery mode on the phone (power + volume down), then retry')
 	}
 	state.dev = null
+	state.serial = null
 	state.mode = null
 	state.adbState = null
 	refreshUi()
@@ -369,6 +425,7 @@ function adopt(connected) {
 	state.adb = connected.adb
 	state.mode = 'adb'
 	state.adbState = connected.state
+	state.serial = connected.serial ?? null
 	refreshUi()
 	return connected.adb
 }
@@ -379,6 +436,7 @@ const session = recoverySession({ log, hint, adopt })
 async function reconnectSideload(onWait) {
 	state.adb = null
 	state.adbState = null
+	state.serial = null
 	state.mode = null
 	refreshUi()
 	return session.reconnect(onWait)
@@ -387,14 +445,11 @@ async function reconnectSideload(onWait) {
 // ---- update: find the add-ons that are installed, then pick the path --------------------
 
 // Which configured add-ons look installed? Only answerable over adb from a booted phone; an add-on
-// with no `detect` ids cannot be checked at all. `always` add-ons are never checked either: a
-// recovery partition has no package id and every ROM install overwrites it, so it always goes on
-// again.
+// with no `detect` ids cannot be checked at all.
 async function detectAddons() {
-	const always = state.config.addons.filter((addon) => addon.always)
-	const checkable = state.config.addons.filter((addon) => !addon.always)
-	if (!checkable.length) return { present: [], unknown: [], always }
-	if (!state.adb || state.adbState !== 'device') return { present: [], unknown: checkable, always }
+	const checkable = state.config.addons
+	if (!checkable.length) return { present: [], unknown: [] }
+	if (!state.adb || state.adbState !== 'device') return { present: [], unknown: checkable }
 	const present = []
 	const unknown = []
 	for (const addon of checkable) {
@@ -407,15 +462,17 @@ async function detectAddons() {
 		if (result.state === 'present') present.push(addon)
 		if (result.state === 'unknown') unknown.push(addon)
 	}
-	return { present, unknown, always }
+	return { present, unknown }
 }
 
 const names = (addons) => addons.map((addon, i) => shortName(addon, i)).join(', ')
 
 // Recovery never runs addon.d, so an update with add-ons installed would break them. Returns the
-// add-ons to re-push, or null when the user aborts.
+// add-ons to re-push plus the chosen recovery, `{ local: true }` for the Updater path, or null when
+// the user aborts.
 async function pickUpdatePath() {
-	const { present, unknown, always } = await detectAddons()
+	const { present, unknown } = await detectAddons()
+	const recovery = chosenRecovery()
 	let repush = present
 	if (unknown.length) {
 		const choice = await choose({
@@ -430,15 +487,15 @@ async function pickUpdatePath() {
 		if (!choice) return null
 		if (choice === 'present') repush = [...present, ...unknown]
 	}
-	if (!repush.length && !always.length) {
-		log('update: no add-on packages, going straight to sideload')
-		return []
+	if (!repush.length) {
+		log(`update: no add-on packages${recovery ? `, installing ${shortName(recovery)} after the ROM` : ', going straight to sideload'}`)
+		return { addons: [], recovery }
 	}
 	// The ROM's Updater keeps add-on packages through addon.d, but it rewrites the recovery
-	// partition like a sideload does, so an `always` add-on would be gone: sideload instead.
-	if (always.length) {
-		log(`update: ${names(always)} is rewritten by any update — sideloading it again after the ROM`)
-		return [...repush, ...always]
+	// partition like a sideload does, so a chosen recovery would be gone: sideload instead.
+	if (recovery) {
+		log(`update: ${shortName(recovery)} selected — sideloading the ROM and installing it after`)
+		return { addons: repush, recovery }
 	}
 	const choice = await choose({
 		title: `${names(repush)} installed`,
@@ -450,19 +507,19 @@ async function pickUpdatePath() {
 		cancel: { value: 'abort', label: 'Cancel' },
 	})
 	log(`dialog: addon present -> ${choice ?? 'abort'}`)
-	if (choice === 'local') return 'local'
-	return choice === 'sideload' ? repush : null
+	if (choice === 'local') return { local: true }
+	return choice === 'sideload' ? { addons: repush, recovery: null } : null
 }
 
 async function update() {
 	if (state.busy) return
 	hint('')
 	log(`update: start (mode ${selectedMode()})`)
-	const repush = await pickUpdatePath()
-	if (repush === null) return say('Update cancelled.')
-	if (repush === 'local') return await pushForLocalUpdate()
-	startRun(plans.update(repush))
-	return await recoveryUpdate({ repush })
+	const path = await pickUpdatePath()
+	if (!path) return say('Update cancelled.')
+	if (path.local) return await pushForLocalUpdate()
+	startRun(plans.update(path.addons, path.recovery))
+	return await recoveryUpdate(path)
 }
 
 // Local install: the zip has to reach the phone, then the ROM's own Updater runs addon.d and keeps
@@ -558,17 +615,23 @@ async function downloadStep(stepId, entry, label) {
 	return blob
 }
 
-// Picks the zips of the add-ons that will be sideloaded, before the phone is touched.
-async function pickAddons(addons) {
+// Picks the zips/images of everything installed after the ROM, before the phone is touched. The
+// recovery is picked too, even when it is an image flashed later from the bootloader.
+async function pickPackages(addons, recovery) {
 	const entries = []
 	for (const [index, addon] of addons.entries()) {
-		entries.push({ addon, blob: await pickAddon(`pick${index}`, addon, log) })
+		entries.push({ addon, blob: await pickAddon(`pick${index}`, addon, log), stepId: `addon${index}` })
 		hint('')
 	}
-	return entries
+	let recoveryEntry = null
+	if (recovery) {
+		recoveryEntry = { addon: recovery, blob: await pickAddon('pickrecovery', recovery, log, { strict: true }), stepId: 'recovery' }
+		hint('')
+	}
+	return { entries, recoveryEntry }
 }
 
-async function recoveryUpdate({ repush = [] } = {}) {
+async function recoveryUpdate({ addons = [], recovery = null } = {}) {
 	const ota = state.config.ota
 	busy(true)
 	try {
@@ -584,7 +647,9 @@ async function recoveryUpdate({ repush = [] } = {}) {
 		step('check', 'done', fromBootloader ? 'fastboot' : `adb (${state.adbState})`)
 		log(`download: ${ota.url} (${size(ota.size)})`)
 		const blob = await downloadStep('download', ota, 'OTA')
-		const addons = await pickAddons(repush)
+		const { entries, recoveryEntry } = await pickPackages(addons, recovery)
+		const imageRecovery = recoveryEntry?.addon.kind === 'image' ? recoveryEntry : null
+		const zipEntries = [...entries, ...(recoveryEntry && !imageRecovery ? [recoveryEntry] : [])]
 
 		if (fromBootloader) {
 			// download first, so the phone is not parked in sideload while 1.8 GB come down
@@ -597,6 +662,7 @@ async function recoveryUpdate({ repush = [] } = {}) {
 			say('Rebooting to recovery (sideload)…')
 			await rebootAdb(state.adb, 'sideload')
 			state.adb = null
+			state.serial = null
 			state.mode = null
 			state.adbState = null
 			refreshUi()
@@ -625,9 +691,12 @@ async function recoveryUpdate({ repush = [] } = {}) {
 		log(`sideload transfer done (${transfer.sent} bytes, device said done: ${transfer.confirmed})`)
 		step('flash', 'done', transfer.confirmed ? 'OTA installed' : 'transfer complete — recovery is installing')
 		log('sideload finished — recovery asks whether to reboot recovery for more packages')
-		await sideloadAddons(addons)
+		let skipped = false
+		if (zipEntries.length) skipped = (await sideloadAddons(zipEntries, { more: Boolean(imageRecovery) })) === 'skipped'
+		if (imageRecovery) await flashRecoveryImage(imageRecovery)
+		else finishRun(skipped)
 	} catch (err) {
-		failRun(err, 'sideload failed')
+		failRun(err, 'update failed')
 	} finally {
 		busy(false)
 	}
@@ -636,18 +705,22 @@ async function recoveryUpdate({ repush = [] } = {}) {
 async function cleanFlash() {
 	const d = state.config
 	const chosen = chosenAddons()
+	const recovery = chosenRecovery()
 	// the usb watcher drops state.dev on every reboot mid-run, so keep our own handle
 	const dev = state.dev
-	startRun(plans.clean(chosen))
+	startRun(plans.clean(chosen, recovery))
 	busy(true)
 	try {
 		step('check', 'done', 'fastboot, unlocked')
+		if (!d.images) throw new Error('this configuration has no additional images to flash')
 		if (!d.ota) throw new Error('this build has no OTA zip published, and the clean flow needs one for the ROM sideload')
 		// everything is on the host before the phone is touched: a failed download can no longer
 		// leave a wiped device with no ROM to install
 		const imageBlob = await downloadStep('download', d.images, 'additional images')
 		const otaBlob = await downloadStep('otadl', d.ota, 'OTA')
-		const addons = await pickAddons(chosen)
+		const { entries, recoveryEntry } = await pickPackages(chosen, recovery)
+		const imageRecovery = recoveryEntry?.addon.kind === 'image' ? recoveryEntry : null
+		const zipEntries = [...entries, ...(recoveryEntry && !imageRecovery ? [recoveryEntry] : [])]
 
 		// 1. additional images (boot chain) — the ROM itself comes from the OTA below
 		step('flash', 'on', 'reading images…')
@@ -679,9 +752,16 @@ async function cleanFlash() {
 		})
 		if (confirmed !== 'ok') throw new Error('factory reset not confirmed — the ROM was not installed')
 		log('clean: asking for Factory Reset → Format data / factory reset in recovery')
-		await dev.reboot('recovery').catch((err) => log(`clean: reboot to recovery failed: ${err.message}`))
+		try {
+			await dev.reboot('recovery')
+		} catch (err) {
+			log(`clean: reboot to recovery failed: ${err.message}`)
+			hint('The bootloader refused “reboot recovery” — on the phone: Reboot to recovery, then Factory Reset → Format data.')
+		}
+		state.dev = null
 		state.adb = null
 		state.adbState = null
+		state.serial = null
 		state.mode = null
 		refreshUi()
 		hint('Recovery: Factory Reset → Format data / factory reset, back to the main menu, then Apply update → Apply from ADB.')
@@ -710,8 +790,11 @@ async function cleanFlash() {
 		})
 		step('rom', 'done', 'ROM installed')
 
-		// 4. the add-ons, if any were asked for
-		await sideloadAddons(addons)
+		// 4. the zip packages, then the recovery image (which needs the bootloader again)
+		let skipped = false
+		if (zipEntries.length) skipped = (await sideloadAddons(zipEntries, { more: Boolean(imageRecovery) })) === 'skipped'
+		if (imageRecovery) await flashRecoveryImage(imageRecovery)
+		else finishRun(skipped)
 	} catch (err) {
 		failRun(err, 'clean flash failed')
 	} finally {
@@ -728,15 +811,12 @@ async function flash() {
 // ---- add-ons --------------------------------------------------------------------------
 
 // Answering Yes to recovery's "install additional packages" prompt brings the sideload host back;
-// the add-ons then go on in sequence, before the first boot of the new build.
-async function sideloadAddons(entries) {
-	if (!entries.length) {
-		step('done', 'done', 'on the phone: No, then Reboot system now')
-		say('Installed. On the phone: answer No, then Reboot system now.', 'ok')
-		hint('Recovery asks about additional packages — answer No (the package is already written), then choose Reboot system now.')
-		return
-	}
+// the zip packages (add-ons and a zip recovery) then go on in sequence, before the first boot of
+// the new build.
+async function sideloadAddons(entries, { more = false } = {}) {
+	if (!entries.length) return false
 	const many = entries.length > 1
+	const packages = many ? 'packages' : 'package'
 	const choice = await choose({
 		title: 'Recovery is asking about additional packages',
 		body: `Answer Yes — the page sideloads ${many ? 'them' : 'it'} before the first boot.`,
@@ -744,52 +824,119 @@ async function sideloadAddons(entries) {
 			'Answer Yes on the phone',
 			'Wait for recovery to restart',
 			'Choose Apply update → Apply from ADB',
-			`The page sideloads ${many ? 'each add-on' : 'the add-on'} automatically; then Reboot system now`,
+			`The page sideloads ${many ? 'each package' : 'the package'} automatically${more ? '; then the recovery is flashed' : '; then Reboot system now'}`,
 		],
 		options: [
-			{ value: 'addons', label: `Continue with the add-on${many ? 's' : ''}`, kind: 'primary' },
+			{ value: 'addons', label: `Continue with the ${packages}`, kind: 'primary' },
 			{ value: 'skip', label: 'Skip' },
 		],
 	})
 	log(`post-OTA prompt: ${choice ?? 'cancel'}`)
 	if (choice !== 'addons') {
-		step('done', 'done', 'on the phone: No, then Reboot system now')
-		say('Installed. On the phone: answer No, then Reboot system now.', 'ok')
-		return
+		step('reboot', 'done', 'skipped')
+		return 'skipped'
 	}
-	for (const [index, { addon, blob }] of entries.entries()) {
+	for (const [index, { addon, blob, stepId }] of entries.entries()) {
 		const name = shortName(addon, index)
 		const onPhone = index ? `On the phone: Apply update → Apply from ADB again for ${name}.` : 'On the phone: tap Yes, then Apply update → Apply from ADB.'
 		hint(onPhone)
 		// recovery is (re)starting here, so the current handle is on its way out: never reuse it
 		state.adb = null
 		state.adbState = null
+		state.serial = null
 		state.mode = null
 		refreshUi()
-		step(`addon${index}`, 'on', 'waiting for recovery…')
+		step(stepId, 'on', 'waiting for recovery…')
 		await session.wait(600, (i) => {
 			if (i % 15 === 0) hint(onPhone)
 		})
 		if (!index) step('reboot', 'done', 'recovery is back')
-		hint(`Recovery may say “Signature verification failed” during this install — tap Yes. Add-ons are not signed with the ROM’s key.`)
-		step(`addon${index}`, 'on', 'sideloading…')
+		hint('Recovery may say “Signature verification failed” during this install — tap Yes. Packages are not signed with the ROM’s key.')
+		step(stepId, 'on', 'sideloading…')
 		say(`Sideloading ${name}…`)
 		const transfer = await sideloadWithWait(state.adb, blob, {
 			label: `${name} sideload`,
 			reconnect: () => reconnectSideload(() => hint(`Waiting for recovery again — Apply update → Apply from ADB for ${name}.`)),
 			onLog: log,
 			onProgress: (p) => {
-				step(`addon${index}`, 'on', `${Math.round(p * 100)}%`)
-				progress(`addon${index}`, p)
+				step(stepId, 'on', `${Math.round(p * 100)}%`)
+				progress(stepId, p)
 			},
-			onWait: () => step(`addon${index}`, 'on', 'recovery is installing it…'),
+			onWait: () => step(stepId, 'on', 'recovery is installing it…'),
 		})
 		log(`${name} transfer done (${transfer.sent} bytes, device said done: ${transfer.confirmed})`)
-		step(`addon${index}`, 'done', `${name} installed`)
+		step(stepId, 'done', `${name} installed`)
 	}
-	step('done', 'done', 'on the phone: Reboot system now')
-	say('Add-ons installed. On the phone: back arrow, then Reboot system now.', 'ok')
-	hint('Back arrow, then Reboot system now on the phone.')
+	if (more) {
+		say('Packages installed. Rebooting to the bootloader to flash the recovery…', 'ok')
+		hint('')
+	}
+	return 'done'
+}
+
+// No more packages to install: tell the user how to leave recovery.
+function finishRun(skipped = false) {
+	if (skipped) {
+		step('done', 'done', 'on the phone: Reboot system now')
+		say('Skipped. On the phone: Reboot system now.', 'ok')
+		hint('Back arrow, then Reboot system now on the phone.')
+		return
+	}
+	step('done', 'done', 'on the phone: No, then Reboot system now')
+	say('Installed. On the phone: answer No, then Reboot system now.', 'ok')
+	hint('Recovery asks about additional packages — answer No (the package is already written), then choose Reboot system now.')
+}
+
+// Skyward (and any other image recovery) is a whole recovery partition, not a sideload package. It
+// goes on after the ROM — the OTA payload contains `recovery`, so flashing it earlier would be
+// overwritten — and on both slots, because the OTA may have switched the active one.
+async function flashRecoveryImage({ addon, blob }) {
+	const name = shortName(addon)
+	step('recovery', 'on', 'rebooting to the bootloader…')
+	say(`Rebooting to the bootloader to flash ${name}…`)
+	hint('On the phone: answer No, then Reboot to bootloader. The page waits for it and flashes both recovery slots.')
+	if (state.adb) {
+		await rebootAdb(state.adb, 'bootloader').catch((err) => log(`recovery: adb reboot bootloader failed: ${err.message}`))
+	}
+	state.adb = null
+	state.adbState = null
+	state.serial = null
+	state.dev = null
+	state.mode = null
+	refreshUi()
+	const dev = await waitForFastbootDevice(180, (i) => {
+		if (i % 15 === 0) hint('Waiting for the bootloader — on the phone: Reboot to bootloader.')
+	})
+	step('recovery', 'on', `flashing ${name}…`)
+	say(`Flashing ${name}…`)
+	const rawSlot = await dev.getVariable('has-slot:recovery').catch(() => null)
+	const hasSlot = sanitizeVar('has-slot:recovery', rawSlot)
+	// Only a partition the bootloader says is slotted is written twice; an unknown answer is safer
+	// as one plain `recovery` flash than as two flashes of the same partition.
+	const slots = hasSlot === 'yes' ? ['a', 'b'] : ['current']
+	for (const [index, slot] of slots.entries()) {
+		await dev.flashBlob('recovery', slot, blob, (p) => {
+			step('recovery', 'on', `${slot === 'current' ? 'recovery' : `recovery_${slot}`} ${Math.round(p * 100)}%`)
+			progress('recovery', (index + p) / slots.length)
+		})
+	}
+	const where = slots.map((slot) => (slot === 'current' ? 'recovery' : `recovery_${slot}`)).join(' and ')
+	step('recovery', 'done', `${name} flashed to ${where}`)
+	log(`recovery: flashed ${name} to ${where}`)
+	hint('')
+	try {
+		await dev.reboot('')
+		say(`${name} installed. The phone is rebooting.`, 'ok')
+	} catch (err) {
+		log(`recovery: reboot failed: ${err.message}`)
+		say(`${name} installed. On the phone: Reboot system now.`, 'ok')
+		hint('The bootloader did not reboot by itself — choose Reboot system now on the phone.')
+	}
+	step('done', 'done', `${name} installed`)
+	state.dev = null
+	state.serial = null
+	state.mode = null
+	refreshUi()
 }
 
 // ---- live connection state ------------------------------------------------------------
@@ -808,6 +955,7 @@ function watchConnection() {
 				// restart): drop the dead handles but leave the run's own UI alone
 				state.adb = null
 				state.dev = null
+				state.serial = null
 				state.mode = null
 				state.adbState = null
 				return
@@ -857,13 +1005,21 @@ const rememberedConfig = () => {
 function renderConfig(d) {
 	document.title = `Flash · ${d.name} (${d.codename})`
 	$('build').textContent = d.build
-	$('build-meta').textContent = [d.codename, d.models?.join('/'), d.ota ? `OTA ${size(d.ota.size)}` : null, d.images ? `images ${size(d.images.size)}` : null, d.addons.length ? `${d.addons.length} add-on${d.addons.length > 1 ? 's' : ''} by file` : null]
+	$('build-meta').textContent = [
+		d.codename,
+		d.models?.join('/'),
+		d.ota ? `OTA ${size(d.ota.size)}` : null,
+		d.images ? `images ${size(d.images.size)}` : null,
+		d.recoveries.length ? `${d.recoveries.length} recover${d.recoveries.length > 1 ? 'ies' : 'y'}` : null,
+		d.addons.length ? `${d.addons.length} add-on${d.addons.length > 1 ? 's' : ''} by file` : null,
+	]
 		.filter(Boolean)
 		.join(' · ')
 	const chip = $('build-chip')
 	chip.hidden = false
 	chip.textContent = d.channel === 'latest' ? 'latest build' : (d.channel ?? 'build')
 	chip.classList.toggle('warn', d.channel !== 'latest')
+	renderRecoveryToggles(d.recoveries)
 	renderAddonToggles(d.addons)
 	paintConfigCard(d)
 	if (!d.ota && selectedMode() === 'update') document.querySelector('input[name="mode"][value="clean"]').checked = true
@@ -874,6 +1030,7 @@ function renderConfig(d) {
 	log(`config: ${d.id} — ${d.codename} · ${d.build} (${d.channel ?? 'build'})`)
 	log(`ota: ${d.ota?.url.split('/').pop() ?? 'not published'} (${d.ota ? size(d.ota.size) : '—'})`)
 	log(`images: ${d.images?.url.split('/').pop() ?? 'not published'} (${d.images ? size(d.images.size) : '—'})`)
+	for (const recovery of d.recoveries) log(`recovery: ${recovery.title ?? recovery.name} (${recovery.kind}, ${size(recovery.size ?? 0)})`)
 	for (const addon of d.addons) log(`addon: ${addon.name} (${size(addon.size ?? 0)})`)
 }
 
@@ -881,6 +1038,7 @@ async function selectConfig(id) {
 	const d = configById(id)
 	if (!d || d === state.config) return
 	state.config = d
+	state.recovery = null
 	state.ack = ackStored(d.id)
 	try {
 		localStorage.setItem(CONFIG_KEY, d.id)
@@ -952,6 +1110,18 @@ async function init() {
 	$('connect').addEventListener('click', connect)
 	$('to-bootloader').addEventListener('click', toBootloader)
 	$('flash').addEventListener('click', flash)
+	// A bootloader is a different USB identity from Android, so an update started over adb may
+	// need this gesture before the recovery image can be flashed.
+	$('grant-fastboot').addEventListener('click', async () => {
+		try {
+			const { mode } = await pickDevice()
+			log(`bootloader grant: selected ${mode}`)
+			if (mode === 'fastboot') $('grant-fastboot').hidden = true
+			else hint('That device is not in fastboot mode — reboot it to the bootloader and try again.')
+		} catch (err) {
+			log(`bootloader grant: ${err.message}`)
+		}
+	})
 
 	const first = configById(rememberedConfig()) ?? state.configs[0]
 	await selectConfig(first.id)

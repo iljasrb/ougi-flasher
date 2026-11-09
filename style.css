@@ -260,8 +260,11 @@ select.btn { height: var(--control-h); padding: 0 .5rem; color: var(--fg); }
 .chip.warn { border-color: var(--err); color: var(--err); }
 
 .options { margin-top: var(--gap); }
-/* exactly two modes, half each; the add-on row below spans the width */
+/* exactly two modes, half each; the recovery and add-on rows below span the width */
 .modes { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-sm); }
+#recoveries, #addons { margin-top: var(--gap-sm); }
+/* one recovery at a time: a single column of choices reads as a radio group */
+#recoveries { grid-template-columns: 1fr; }
 .mode {
 	display: flex;
 	align-items: flex-start;

@@ -72,12 +72,16 @@
             <label class="mode"><input type="radio" name="mode" value="update"><span><strong>Update</strong><em>sideload, keeps data</em></span></label>
           </div>
 
+          <div class="modes" id="recoveries" hidden></div>
+          <div class="modes" id="addons" hidden></div>
+
           <ol class="steps" id="steps"></ol>
           <div class="track" id="track"></div>
 
           <div class="bar options">
             <button class="btn primary" id="flash" disabled>Update</button>
             <button class="btn" id="grant" hidden>Allow recovery adb</button>
+            <button class="btn" id="grant-fastboot" hidden>Allow bootloader</button>
             <span class="status" id="status">Plug in the phone.</span>
           </div>
 
