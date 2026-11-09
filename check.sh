@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Static checks before deploying: syntax, undefined identifiers, unlock detection.
+# Static checks before deploying: syntax, undefined identifiers, config, packages, plans, unlock
+# detection and the sideload reader.
 #
 #   ./check.sh
 set -eu
@@ -17,6 +18,9 @@ rm -f .check.mjs
 node check-unlock.mjs
 node check-sideload.mjs
 node check-paths.mjs
+node check-config.mjs
+node check-packages.mjs
+node check-plans.mjs
 node check-images.mjs
 
 # no-undef is what catches a helper that was deleted or renamed but is still called.

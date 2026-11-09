@@ -4,6 +4,7 @@
 //
 //   node check-images.mjs                   # every config with a matching zip under pkg/
 //   node check-images.mjs /path/to/zip      # an explicit archive, matched to its config by name
+import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { readdir, readFile } from 'node:fs/promises'
 import { loadConfigs } from './lib/config.mjs'
@@ -13,7 +14,10 @@ import { check, done } from './check.mjs'
 
 // ---- flasher.json, through the real loader -------------------------------------------
 // readdir() answers relative to pkg/, so the paths are made readable from here
-const local = (await readdir('pkg', { recursive: true }).catch(() => [])).filter((file) => file.endsWith('.zip')).map((file) => join('pkg', file))
+const local = (await readdir('pkg', { recursive: true }).catch(() => []))
+	.filter((file) => file.endsWith('.zip'))
+	.map((file) => join('pkg', file))
+	.filter((file) => existsSync(file)) // skip a stale/broken test symlink instead of crashing
 // No network in a check: stand in for the manifest publish.sh writes next to the zips. The URLs
 // point at whatever zips are under pkg/, so the contents check below still runs; only the hashes
 // are fake, and the loader only checks their shape.
@@ -53,6 +57,10 @@ for (const config of configs) {
 const fixture = structuredClone(configs[0])
 delete fixture.artifacts // already resolved above; the fixture tests mock no manifest
 for (const addon of fixture.addons) delete addon.artifacts
+for (const recovery of fixture.recoveries) {
+	delete recovery.artifacts
+	delete recovery.github // already resolved above; the fixture tests mock no GitHub
+}
 const respond = (body) => {
 	globalThis.fetch = async () => new Response(JSON.stringify(body))
 }
@@ -87,7 +95,62 @@ const [pulled] = await loadConfigs('mirrored.json')
 const addon = pulled.addons[0]
 check('a mirrored add-on gets url, size and sha256 from its manifest', addon.url === aeraLatest.installer.url && addon.size === aeraLatest.installer.size && addon.sha256 === aeraLatest.installer.sha256, addon.url)
 check('a mirrored add-on is named after the published file', addon.name === 'AERA-bronco-74-split.zip', addon.name)
-check('a mirrored add-on keeps its config fields', addon.always === true && addon.pick === 'installer', JSON.stringify([addon.always, addon.pick]))
+check('a mirrored add-on keeps its config fields', addon.pick === 'installer', addon.pick)
+
+// ---- a recovery variant is a list entry with a kind, and only one is installed at a time ----
+const mirroredRecovery = {
+	id: 'mirror-recovery',
+	codename: 'bronco',
+	name: 'x',
+	ota: { url: 'https://rom.flac.moe/bronco/latest/a.zip', size: 1, sha256: '0'.repeat(64) },
+	recoveries: [{ title: 'AERA', kind: 'zip', source: 'https://rom.flac.moe/aera/', artifacts: 'https://rom.flac.moe/aera/aera.json', pick: 'installer' }],
+}
+globalThis.fetch = async (path) => new Response(JSON.stringify(String(path).endsWith('aera.json') ? aeraLatest : { configs: [mirroredRecovery] }))
+const [pulledRecovery] = await loadConfigs('mirrored-recovery.json')
+const recovery = pulledRecovery.recoveries[0]
+check('a mirrored recovery gets url, size and sha256 from its manifest', recovery.url === aeraLatest.installer.url && recovery.size === aeraLatest.installer.size && recovery.sha256 === aeraLatest.installer.sha256, recovery.url)
+check('a mirrored recovery is named after the published file', recovery.name === 'AERA-bronco-74-split.zip', recovery.name)
+check('a mirrored recovery keeps its kind', recovery.kind === 'zip', recovery.kind)
+
+// An image is written straight to the recovery partition, so it is rejected without a hash.
+const badImage = { ...mirroredRecovery, id: 'bad-image', recoveries: [{ title: 'Skyward', kind: 'image', source: 'https://github.com/iljasrb/skyward', name: 'skyward-bronco.img' }] }
+globalThis.fetch = async () => new Response(JSON.stringify({ configs: [badImage] }))
+let rejectedImage = false
+try {
+	await loadConfigs('bad-image.json')
+} catch {
+	rejectedImage = true
+}
+check('a recovery without a sha256 is rejected', rejectedImage)
+
+// ---- a GitHub-only image follows the newest matching release ----------------------------
+const githubReleases = [
+	{ tag_name: 'r8q-20261110', draft: false, assets: [{ name: 'skyward-r8q.img', size: 1, digest: `sha256:${'c'.repeat(64)}`, browser_download_url: 'https://github.com/x/r8q.img' }] },
+	{ tag_name: 'bronco-20261108', draft: false, assets: [{ name: 'skyward-bronco.img', size: 104857600, digest: `sha256:${'b'.repeat(64)}`, browser_download_url: 'https://github.com/x/skyward-bronco.img' }] },
+]
+const githubConfig = {
+	...mirroredRecovery,
+	id: 'github-recovery',
+	recoveries: [
+		{
+			title: 'Skyward',
+			kind: 'image',
+			source: 'https://github.com/iljasrb/skyward/releases/latest',
+			github: { repo: 'iljasrb/skyward', asset: 'skyward-bronco.img', tag: '^bronco-' },
+			name: 'skyward-bronco.img',
+			size: 1,
+			sha256: '0'.repeat(64),
+		},
+	],
+}
+globalThis.fetch = async (path) => {
+	if (String(path).startsWith('https://api.github.com/')) return new Response(JSON.stringify(githubReleases))
+	return new Response(JSON.stringify({ configs: [githubConfig] }))
+}
+const [githubLoaded] = await loadConfigs('github-recovery.json')
+const skyward = githubLoaded.recoveries[0]
+check('a GitHub recovery follows the newest matching release', skyward.sha256 === 'b'.repeat(64) && skyward.size === 104857600 && skyward.href.endsWith('skyward-bronco.img'), `${skyward.sha256} ${skyward.size}`)
+check('a GitHub recovery keeps the tag it came from', skyward.version === 'bronco-20261108', skyward.version)
 
 // ---- each configuration's zip against its contents ----------------------------------
 const explicit = process.argv[2] ?? null
