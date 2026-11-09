@@ -11,7 +11,7 @@ name. The shipped configuration targets Project Infinity X on the Motorola Think
 ```
 index.html      Flash    device check, download, flash (clean or update)
 console.html    Console  fastboot and adb terminals
-tools.html      Tools    re-sideload an add-on or zip recovery on its own
+tools.html      Tools    re-install an add-on, zip recovery or image recovery
 
 app.js, console.js, tools.js   page logic
 flasher.json                   the configuration manifest
@@ -24,6 +24,7 @@ lib/recovery.mjs               wait for sideload mode, retry after a reconnect
 lib/session.mjs                sideload wait, grant button, reconnect
 lib/addons.mjs                 pick or download a package, hash it
 lib/plans.mjs                  step plans for the Flash page
+lib/recovery-image.mjs         flash a recovery image to one or both slots
 lib/ui.mjs, lib/dialog.mjs     tables, status boxes, dialogs
 lib/term.js                    terminal pane
 zip.mjs                        reads zip entries

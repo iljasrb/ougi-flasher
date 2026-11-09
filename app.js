@@ -12,9 +12,10 @@ import { plans } from './lib/plans.mjs'
 import { every } from './lib/log.mjs'
 import { recoverySession } from './lib/session.mjs'
 import { sideloadWithWait } from './lib/recovery.mjs'
+import { flashRecoveryImage as flashRecoveryPartitions } from './lib/recovery-image.mjs'
 import { failStep, progress, startRun, step } from './lib/steps.mjs'
 import { $, cardTitle, DEFAULT_RISKS, hintBox, pageLog, paintConfigCard, renderKv, size, statusBox } from './lib/ui.mjs'
-import { attachFastboot, grantedDevices, pickDevice, readFastbootInfo, sanitizeVar, watchUsb } from './lib/usb.mjs'
+import { attachFastboot, grantedDevices, pickDevice, readFastbootInfo, watchUsb } from './lib/usb.mjs'
 
 const ACK_KEY = 'ougi-flasher:risk-ack-v2'
 const CONFIG_KEY = 'ougi-flasher:config'
@@ -909,17 +910,12 @@ async function flashRecoveryImage({ addon, blob }) {
 	})
 	step('recovery', 'on', `flashing ${name}…`)
 	say(`Flashing ${name}…`)
-	const rawSlot = await dev.getVariable('has-slot:recovery').catch(() => null)
-	const hasSlot = sanitizeVar('has-slot:recovery', rawSlot)
-	// Only a partition the bootloader says is slotted is written twice; an unknown answer is safer
-	// as one plain `recovery` flash than as two flashes of the same partition.
-	const slots = hasSlot === 'yes' ? ['a', 'b'] : ['current']
-	for (const [index, slot] of slots.entries()) {
-		await dev.flashBlob('recovery', slot, blob, (p) => {
+	const slots = await flashRecoveryPartitions(dev, blob, {
+		onProgress: (slot, done, p) => {
 			step('recovery', 'on', `${slot === 'current' ? 'recovery' : `recovery_${slot}`} ${Math.round(p * 100)}%`)
-			progress('recovery', (index + p) / slots.length)
-		})
-	}
+			progress('recovery', done)
+		},
+	})
 	const where = slots.map((slot) => (slot === 'current' ? 'recovery' : `recovery_${slot}`)).join(' and ')
 	step('recovery', 'done', `${name} flashed to ${where}`)
 	log(`recovery: flashed ${name} to ${where}`)

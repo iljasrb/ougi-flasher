@@ -32,9 +32,10 @@
         <h2>Connection</h2>
         <div class="card static connection-card">
           <span class="name" id="device-name">Not connected</span>
-          <span class="meta" id="device-meta">Booted Android, or recovery sideload</span>
+          <span class="meta" id="device-meta">Booted Android, recovery sideload, or the bootloader</span>
           <div class="bar">
-            <button class="btn" id="connect">Connect</button>
+            <button class="btn" id="connect">Connect adb</button>
+            <button class="btn" id="fastboot-connect">Connect bootloader</button>
           </div>
           <table class="kv"><tbody id="device">
             <tr><td>State</td><td>not connected</td></tr>
@@ -56,21 +57,22 @@
     <div class="content">
 
       <section>
-        <h2>Package sideload</h2>
+        <h2>Package install</h2>
         <div class="card static">
           <div class="bar">
-            <select class="btn" id="addon-select" aria-label="Add-on" hidden></select>
+            <select class="btn" id="addon-select" aria-label="Package" hidden></select>
           </div>
           <span class="name" id="package-name">…</span>
-          <span class="meta" id="package-meta">Add-on or zip recovery, pushed with adb sideload</span>
+          <span class="meta" id="package-meta">Add-on, zip recovery, or image recovery</span>
 
           <ol class="steps" id="steps"></ol>
           <div class="track" id="track"></div>
 
           <div class="bar options">
-            <button class="btn primary" id="run" disabled>Sideload add-on</button>
+            <button class="btn primary" id="run" disabled>Sideload package</button>
             <button class="btn" id="grant" hidden>Allow recovery adb</button>
-            <span class="status" id="status">Press Sideload add-on — it waits for the phone in recovery sideload.</span>
+            <button class="btn" id="grant-fastboot" hidden>Allow bootloader</button>
+            <span class="status" id="status">Press the action button — it waits for the phone.</span>
           </div>
 
           <p class="callout hint" id="hint" hidden></p>

@@ -34,6 +34,7 @@ globalThis.location = { origin: 'https://example.test', href: 'https://example.t
 const { fetchPackage, flashImages } = await import('./lib/flash.mjs')
 const { pickAddon, shortName } = await import('./lib/addons.mjs')
 const { sideloadWithWait } = await import('./lib/recovery.mjs')
+const { flashRecoveryImage } = await import('./lib/recovery-image.mjs')
 
 const bytes = new TextEncoder().encode('package bytes')
 const digest = await sha256(new Blob([bytes]))
@@ -87,6 +88,26 @@ check('reports the final progress', progress.at(-1)[1] === 1, JSON.stringify(pro
 calls.length = 0
 await flashImages(dev, images, { slot: 'other' })
 eq('flashes everything to the inactive slot by default', calls.map((call) => call.slot).join(','), 'other,other')
+
+// ---- image recovery slots -------------------------------------------------------------
+const recoveryCalls = []
+const recoveryDev = (hasSlot) => ({
+	getVariable: async (name) => (name === 'has-slot:recovery' ? hasSlot : null),
+	flashBlob: async (partition, slot, data, onProgress) => {
+		recoveryCalls.push({ partition, slot })
+		onProgress?.(1)
+	},
+})
+const recoveryBlob = new Blob([new Uint8Array(1)])
+recoveryCalls.length = 0
+const slotted = await flashRecoveryImage(recoveryDev('has-slot:recovery: yes\nDone'), recoveryBlob)
+check('flashes a slotted recovery to both slots', slotted.join(',') === 'a,b' && recoveryCalls.map((call) => call.slot).join(',') === 'a,b')
+recoveryCalls.length = 0
+const plain = await flashRecoveryImage(recoveryDev('has-slot:recovery: no\nDone'), recoveryBlob)
+check('flashes a plain recovery once', plain.join(',') === 'current' && recoveryCalls.length === 1 && recoveryCalls[0].slot === 'current')
+recoveryCalls.length = 0
+const unknown = await flashRecoveryImage(recoveryDev(null), recoveryBlob)
+check('treats an unknown slot answer as one plain recovery', unknown.join(',') === 'current' && recoveryCalls.length === 1)
 
 // ---- picking a package ----------------------------------------------------------------
 respond(bytes)
